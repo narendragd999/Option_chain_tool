@@ -12,8 +12,6 @@ import json
 import os
 from streamlit.components.v1 import html
 import cloudscraper
-import aiohttp
-import asyncio
 
 # Create a cloudscraper session
 scraper = cloudscraper.create_scraper()
@@ -24,9 +22,9 @@ USER_AGENTS = [
     'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.114 Safari/537.36'
 ]
 BASE_URL = "https://www.nseindia.com"
+
 TICKER_PATH = "tickers.csv"
 ALERTS_FILE = "alerts.json"
-CONFIG_FILE = "config.json"  # New config file for Telegram settings
 
 # Headers mimicking your browser
 headers = {
@@ -36,69 +34,53 @@ headers = {
     "Referer": "https://www.nseindia.com/market-data/equity-derivatives-watch",
 }
 
-# Initial cookie setup
+# Step 1: Visit the homepage to get initial cookies
 print("Visiting homepage...")
 response = scraper.get("https://www.nseindia.com/", headers=headers)
 if response.status_code != 200:
     print(f"Failed to load homepage: {response.status_code}")
     exit()
 
+# Step 2: Visit the derivatives page
 print("Visiting derivatives page...")
 scraper.get("https://www.nseindia.com/market-data/equity-derivatives-watch", headers=headers)
 time.sleep(2)
 
-# Load/Save Telegram Config
-def load_config() -> Dict:
-    if os.path.exists(CONFIG_FILE):
-        with open(CONFIG_FILE, 'r') as f:
-            return json.load(f)
-    return {"telegram_bot_token": "", "telegram_chat_id": ""}
 
-def save_config(config: Dict):
-    with open(CONFIG_FILE, 'w') as f:
-        json.dump(config, f)
 
-# Telegram Integration
-async def send_telegram_message(bot_token: str, chat_id: str, message: str):
-    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-    payload = {
-        "chat_id": chat_id,
-        "text": message,
-        "parse_mode": "Markdown"
-    }
-    async with aiohttp.ClientSession() as session:
-        async with session.post(url, json=payload) as response:
-            if response.status != 200:
-                st.error(f"Failed to send Telegram message: {await response.text()}")
-            else:
-                print(f"Telegram message sent successfully: {message}")
+# Utility Functions
+# def get_headers() -> Dict[str, str]:
+#     return {
+#         'User-Agent': random.choice(USER_AGENTS),
+#         'Accept': '*/*',
+#         'Accept-Language': 'en-US,en;q=0.9',
+#         'Referer': BASE_URL + "/"
+#     }
 
-# Updated get_alert_template
-def get_alert_template(recommendation: Dict, ticker: str, expiry: str, underlying: float = None) -> str:
-    """Generate a formatted alert message for Telegram."""
-    template = (
-        "*SELL CALL ALERT*\n"
-        f"Stock: *{ticker}*\n"
-        f"Strike: *{recommendation['Strike']:.2f}*\n"
-        f"Expiry: *{expiry}*\n"
-        f"Premium: *₹{recommendation['Premium']:.2f}*\n"
-    )
-    if underlying is not None:
-        template += f"Underlying: *₹{underlying:.2f}*\n"
-    if "Risk_Reward" in recommendation:
-        template += f"Risk/Reward: *{recommendation['Risk_Reward']:.2f}*\n"
-    template += f"Reason: *{recommendation['Reason']}*"
-    return template
+# def get_session() -> Optional[requests.Session]:
+#     session = requests.Session()
+#     try:
+#         session.get(BASE_URL, headers=get_headers(), timeout=10)
+#         return session
+#     except requests.RequestException as e:
+#         st.error(f"Session initialization failed: {e}")
+#         return None
 
-# Existing Functions (unchanged unless specified)
 def fetch_options_data(symbol: str, _refresh_key: float) -> Optional[Dict]:
+    # Step 3: Fetch the option chain data
+    #url = "https://www.nseindia.com/api/option-chain-equities?symbol={symbol}"
     url = f"{BASE_URL}/api/option-chain-equities?symbol={symbol}"
     print(f"Fetching data from: {url}")
-    response = scraper.get(url, headers=headers)
+    response = scraper.get(url, headers=headers)   
+
+    # Check response
     if response.status_code == 200:
+        data = response.json()
+        print("Success! Data fetched:")
         return response.json()
     else:
         print(f"Failed with status code: {response.status_code}")
+        print(f"Response text: {response.text}")
         return None
 
 def process_option_data(data: Dict, expiry: str) -> Tuple[pd.DataFrame, pd.DataFrame]:
@@ -166,6 +148,7 @@ def load_tickers() -> List[str]:
 def calculate_pcr(call_df: pd.DataFrame, put_df: pd.DataFrame) -> float:
     return put_df['OI'].sum() / call_df['OI'].sum() if call_df['OI'].sum() > 0 else 0
 
+# Option Greeks Calculator using Black-Scholes Model
 def calculate_option_greeks(S: float, K: float, T: float, r: float, sigma: float, option_type: str = "call") -> Dict[str, float]:
     if T <= 0 or sigma <= 0:
         return {"Delta": 0, "Gamma": 0, "Theta": 0, "Vega": 0, "Rho": 0}
@@ -238,7 +221,9 @@ def check_alerts(alerts: List[Dict], current_ticker: str, underlying: float, cal
     
     for i, alert in enumerate(alerts):
         alert_ticker = alert.get('ticker', None)
-        if alert_ticker is None or alert_ticker != current_ticker:
+        if alert_ticker is None:
+            continue
+        if alert_ticker != current_ticker:
             continue
         
         alert_type = alert['type']
@@ -277,17 +262,24 @@ def check_alerts(alerts: List[Dict], current_ticker: str, underlying: float, cal
     
     return triggered_alerts, alerts_to_remove
 
+# Modified Function for Call Selling Recommendations (Updated Reasons)
 def generate_call_selling_recommendations(call_df: pd.DataFrame, put_df: pd.DataFrame, underlying: float, max_pain: float, 
                                          pcr: float, support_strike: float, resistance_strike: float, risk_tolerance: float, 
                                          oi_threshold: float, days_to_expiry: float, implied_volatility: float, 
                                          risk_free_rate: float, lot_size: float) -> Tuple[List[Dict], Dict]:
+    """
+    Generate call selling recommendations with additional metrics like Theta and Risk-Reward.
+    Returns a tuple of (recommendations list, top pick dictionary).
+    """
     recommendations = []
     strikes = call_df['Strike'].values
     
+    # Filter out-of-the-money (OTM) calls (strike > underlying)
     otm_calls = call_df[call_df['Strike'] > underlying].copy()
     if otm_calls.empty:
         return ([{"Strike": None, "Suggestion": "No OTM calls available", "Reason": "Underlying price exceeds all strikes"}], {})
 
+    # Calculate Greeks for each strike
     T = days_to_expiry / 365.0
     sigma = implied_volatility / 100.0
     r = risk_free_rate / 100.0
@@ -297,6 +289,8 @@ def generate_call_selling_recommendations(call_df: pd.DataFrame, put_df: pd.Data
         otm_calls.loc[otm_calls['Strike'] == strike, 'Theta'] = greeks['Theta']
     
     otm_calls['Premium'] = otm_calls['LTP']
+    
+    # Calculate additional metrics
     otm_calls['Distance_from_Resistance'] = otm_calls['Strike'] - resistance_strike if resistance_strike else 0
     otm_calls['Risk_Reward'] = np.where(
         (otm_calls['Strike'] - underlying) > 0,
@@ -304,6 +298,7 @@ def generate_call_selling_recommendations(call_df: pd.DataFrame, put_df: pd.Data
         0
     )
     
+    # Generate recommendations
     for index, row in otm_calls.iterrows():
         strike = row['Strike']
         premium = row['Premium']
@@ -312,10 +307,11 @@ def generate_call_selling_recommendations(call_df: pd.DataFrame, put_df: pd.Data
         theta = row['Theta']
         risk_reward = row['Risk_Reward']
         
-        if abs(row['Change_in_OI']) < oi_threshold and theta < -0.1 and oi > 2000:
+        # Determine suggestion and reason
+        if abs(row['Change_in_OI']) < oi_threshold and theta < -0.1 and oi > 2000:  # High OI and favorable Theta decay
             suggestion = "Sell"
             reason = "High OI and favorable Theta decay"
-        elif risk_reward > 0.2:
+        elif risk_reward > 0.2:  # Good risk-reward ratio
             suggestion = "Sell"
             reason = "Good risk-reward ratio"
         else:
@@ -334,98 +330,20 @@ def generate_call_selling_recommendations(call_df: pd.DataFrame, put_df: pd.Data
             "Lot_Size": lot_size
         })
     
+    # Sort recommendations by Theta (most negative first) and OI (highest first)
     recommendations.sort(key=lambda x: (x['Theta'], -x['OI']))
+    
+    # Select top pick (best Theta and high OI)
     top_pick = recommendations[0] if recommendations else {}
     
     return recommendations, top_pick
-
-
-# Updated generate_smart_trade_suggestions
-def generate_smart_trade_suggestions(tickers: List[str], expiry: str, bot_token: str, chat_id: str, proximity_percent: float) -> List[Dict]:
-    suggestions = []
-    refresh_key = time.time()
-    
-    for ticker in tickers:
-        with st.spinner(f"Fetching data for {ticker}..."):
-            data = fetch_options_data(ticker, refresh_key)
-            if not data or 'records' not in data:
-                print(f"Failed to fetch data for {ticker}")
-                continue
-            
-            call_df, put_df = process_option_data(data, expiry)
-            underlying = data['records'].get('underlyingValue', 0)
-            support_strike, resistance_strike = identify_support_resistance(call_df, put_df)
-            
-            if resistance_strike is None:
-                continue
-            
-            # Calculate proximity threshold based on user input (converted from percentage to decimal)
-            proximity_threshold = resistance_strike * (abs(proximity_percent) / 100)
-            distance_to_resistance = resistance_strike - underlying
-            
-            # Check if underlying is within the specified range (positive or negative proximity)
-            if proximity_percent >= 0:
-                # Positive percentage: Underlying below or at resistance within threshold
-                if 0 <= distance_to_resistance <= proximity_threshold:
-                    otm_calls = call_df[call_df['Strike'] > underlying]
-                    if otm_calls.empty:
-                        continue
-                    nearest_strike = otm_calls['Strike'].iloc[0]
-                    premium = otm_calls[otm_calls['Strike'] == nearest_strike]['LTP'].iloc[0]
-                    
-                    suggestion = {
-                        "Ticker": ticker,
-                        "Underlying": underlying,
-                        "Strike": nearest_strike,
-                        "Premium": premium,
-                        "Resistance": resistance_strike,
-                        "Distance_to_Resistance": distance_to_resistance,
-                        "Reason": f"Underlying within {proximity_percent}% of or at resistance",
-                        "Suggestion": "Sell Call"
-                    }
-                    suggestions.append(suggestion)
-                    
-                    if bot_token and chat_id:
-                        alert_message = get_alert_template(suggestion, ticker, expiry, suggestion['Underlying'])
-                        #asyncio.run(send_telegram_message(bot_token, chat_id, alert_message))
-            else:
-                # Negative percentage: Underlying above resistance within threshold
-                if -proximity_threshold <= distance_to_resistance <= 0:
-                    otm_calls = call_df[call_df['Strike'] > underlying]
-                    if otm_calls.empty:
-                        continue
-                    nearest_strike = otm_calls['Strike'].iloc[0]
-                    premium = otm_calls[otm_calls['Strike'] == nearest_strike]['LTP'].iloc[0]
-                    
-                    suggestion = {
-                        "Ticker": ticker,
-                        "Underlying": underlying,
-                        "Strike": nearest_strike,
-                        "Premium": premium,
-                        "Resistance": resistance_strike,
-                        "Distance_to_Resistance": distance_to_resistance,
-                        "Reason": f"Underlying within {proximity_percent}% above resistance",
-                        "Suggestion": "Sell Call"
-                    }
-                    suggestions.append(suggestion)
-                    
-                    if bot_token and chat_id:
-                        alert_message = get_alert_template(suggestion, ticker, expiry, suggestion['Underlying'])
-                        #asyncio.run(send_telegram_message(bot_token, chat_id, alert_message))
-    
-    return suggestions
 
 # Main Application
 def main():
     st.set_page_config(page_title="Options Chain Analysis", layout="wide")
     st.title("Options Chain Analysis")
     
-    # Load Telegram Config
-    config = load_config()
-    if 'telegram_config' not in st.session_state:
-        st.session_state['telegram_config'] = config
-    
-    # Initialize Session State
+    # Initialize Session State for Alerts and P&L Inputs
     if 'alerts' not in st.session_state:
         st.session_state['alerts'] = load_alerts()
     if 'triggered_alerts' not in st.session_state:
@@ -437,10 +355,8 @@ def main():
     if 'sold_premium' not in st.session_state:
         st.session_state['sold_premium'] = None
     if 'lot_size' not in st.session_state:
-        st.session_state['lot_size'] = 100.0
-    if 'screener_suggestions' not in st.session_state:
-        st.session_state['screener_suggestions'] = None
-    
+        st.session_state['lot_size'] = 100.0  # Default value
+
     # Sidebar Configuration
     with st.sidebar:
         tickers = load_tickers()
@@ -451,17 +367,19 @@ def main():
             st.session_state['refresh_key'] = time.time()
         
         st.subheader("Trade Parameters")
-        risk_tolerance = st.number_input("Risk Tolerance (₹):", value=5000.0, step=1000.0)
-        
+        risk_tolerance = st.number_input("Risk Tolerance (₹):", value=5000.0, step=1000.0,
+                                       help="Maximum loss you're willing to accept before taking action")
+        st.session_state['lot_size'] = st.number_input("Lot Size:", value=st.session_state['lot_size'], step=1.0, key="lot_size_input")
         
         st.subheader("P&L Simulator")
         st.session_state['sold_strike'] = st.number_input("Sold Call Strike:", value=st.session_state['sold_strike'], 
                                                         placeholder="Enter strike", key="sold_strike_input")
         st.session_state['sold_premium'] = st.number_input("Sold Premium:", value=st.session_state['sold_premium'], 
                                                          placeholder="Enter premium", key="sold_premium_input")
-        st.session_state['lot_size'] = st.number_input("Lot Size:", value=st.session_state['lot_size'], step=1.0, key="lot_size_input")        
+        #st.number_input("Lot Size:", value=st.session_state['lot_size'], key="lot_size_display")
+        
         st.subheader("Adjustment Inputs")
-        oi_threshold = st.number_input("OI Change Threshold:", value=500.0, step=1000.0)
+        oi_threshold = st.number_input("OI Change Threshold:", value=500.0, step=100.0)
 
         st.subheader("Greeks Calculator Inputs")
         implied_volatility = st.number_input("Implied Volatility (%):", value=30.0, step=1.0)
@@ -472,16 +390,34 @@ def main():
         support_color = st.color_picker("Support Line Color:", value="#00FF00")
         resistance_color = st.color_picker("Resistance Line Color:", value="#800080")
 
-        st.subheader("Telegram Integration")
-        telegram_bot_token = st.text_input("Telegram Bot Token:", value=st.session_state['telegram_config']['telegram_bot_token'], type="password")
-        telegram_chat_id = st.text_input("Telegram Chat ID:", value=st.session_state['telegram_config']['telegram_chat_id'])
-        if telegram_bot_token != st.session_state['telegram_config']['telegram_bot_token'] or telegram_chat_id != st.session_state['telegram_config']['telegram_chat_id']:
-            st.session_state['telegram_config'] = {"telegram_bot_token": telegram_bot_token, "telegram_chat_id": telegram_chat_id}
-            save_config(st.session_state['telegram_config'])
-        enable_telegram_alerts = st.checkbox("Enable Telegram Alerts", value=True)
-
         st.subheader("Alerts")
-        # Existing alert configuration remains unchanged...
+        st.write(f"Set alert for ticker: **{ticker}**")
+        alert_type = st.selectbox("Alert Type:", ["Spot Price", "OI Change", "PCR"])
+        threshold = st.number_input("Threshold Value:", value=0.0, step=0.1)
+        direction = st.selectbox("Direction:", ["Above", "Below"])
+        one_time = st.checkbox("One-Time Alert", value=False)
+        
+        if st.button("Add Alert"):
+            alert = {
+                "ticker": ticker,
+                "type": alert_type,
+                "threshold": threshold,
+                "direction": direction,
+                "one_time": one_time
+            }
+            st.session_state['alerts'].append(alert)
+            save_alerts(st.session_state['alerts'])
+            st.success(f"Added Alert for {ticker}: {alert_type} {direction} {threshold} {'(One-Time)' if one_time else ''}")
+
+        if st.session_state['alerts']:
+            st.write("**Current Alerts:**")
+            for i, alert in enumerate(st.session_state['alerts']):
+                alert_ticker = alert.get('ticker', 'Unknown Ticker')
+                st.write(f"{i+1}. {alert_ticker}: {alert['type']} {alert['direction']} {alert['threshold']} {'(One-Time)' if alert.get('one_time', False) else ''}")
+                if st.button(f"Delete Alert {i+1}", key=f"delete_alert_{i}"):
+                    st.session_state['alerts'].pop(i)
+                    save_alerts(st.session_state['alerts'])
+                    st.rerun()
 
     # Data Fetching and Processing
     st.session_state.setdefault('refresh_key', time.time())
@@ -499,7 +435,7 @@ def main():
     pcr = calculate_pcr(call_df, put_df)
     support_strike, resistance_strike = identify_support_resistance(call_df, put_df, top_n=3)
 
-    # Check Alerts (unchanged)
+    # Check Alerts
     triggered_alerts, alerts_to_remove = check_alerts(st.session_state['alerts'], ticker, underlying, call_df, put_df, 
                                                     st.session_state['sold_strike'], pcr)
     if alerts_to_remove:
@@ -527,9 +463,8 @@ def main():
     st.subheader(f"Underlying: {underlying:.2f}")
     st.metric("Max Pain Strike", f"{max_pain:.2f}")
     
-    tabs = st.tabs(["Data", "OI Analysis", "Volume Analysis", "Price Analysis", "P&L Analysis", "P&L/Heatmap", "Greeks Analysis", "Trade Suggestions", "Trade Screener"])
+    tabs = st.tabs(["Data", "OI Analysis", "Volume Analysis", "Price Analysis", "P&L Analysis", "P&L/Heatmap", "Greeks Analysis", "Trade Suggestions"])
     
-    # Existing Tabs (unchanged until "Trade Screener")
     with tabs[0]:
         col1, col2 = st.columns(2)
         col1.subheader("Call Options")
@@ -577,39 +512,55 @@ def main():
             fig_pl = px.line(x=spot_range, y=pl_values, labels={'x': 'Spot Price', 'y': 'P&L (₹)'},
                             title=f'P&L: Sold {st.session_state["sold_strike"]} Call Option')
             
+            # Add vertical lines with non-overlapping annotations
+            # Base y position for annotations (top of the chart)
             y_max = max(pl_values)
             y_min = min(pl_values)
             y_range = y_max - y_min
-            y_offset = y_range * 0.05
+            y_offset = y_range * 0.05  # 5% of the y-range for spacing between annotations
             
+            # Add Max Pain line
             fig_pl.add_vline(x=max_pain, line_dash="dash", line_color="red", 
                             annotation_text=f"Max Pain ({max_pain:.2f})", 
                             annotation_position="top",
-                            annotation=dict(y=y_max + y_offset * 3))
+                            annotation=dict(y=y_max + y_offset * 3))  # Highest position
+            
+            # Add Spot line
             fig_pl.add_vline(x=underlying, line_dash="dash", line_color="blue", 
                             annotation_text=f"Spot ({underlying:.2f})", 
                             annotation_position="top",
-                            annotation=dict(y=y_max + y_offset * 2))
+                            annotation=dict(y=y_max + y_offset * 2))  # Second highest
+            
+            # Add Support line (if available)
             if support_strike is not None:
                 fig_pl.add_vline(x=support_strike, line_dash="dot", line_color=support_color, 
                                 annotation_text=f"Support ({support_strike:.2f})", 
                                 annotation_position="top left",
-                                annotation=dict(y=y_max + y_offset))
+                                annotation=dict(y=y_max + y_offset))  # Third position
+            
+            # Add Resistance line (if available)
             if resistance_strike is not None:
                 fig_pl.add_vline(x=resistance_strike, line_dash="dot", line_color=resistance_color, 
                                 annotation_text=f"Resistance ({resistance_strike:.2f})", 
                                 annotation_position="top right",
-                                annotation=dict(y=y_max))
+                                annotation=dict(y=y_max))  # Lowest of the top annotations
+            
+            # Add Breakeven line
             breakeven = st.session_state['sold_strike'] + st.session_state['sold_premium']
             fig_pl.add_vline(x=breakeven, line_dash="dash", line_color="orange", 
                             annotation_text=f"Breakeven ({breakeven:.2f})", 
                             annotation_position="top",
-                            annotation=dict(y=y_max + y_offset * 4))
+                            annotation=dict(y=y_max + y_offset * 4))  # Above Max Pain
+            
+            # Add Current P&L annotation
             current_pl = st.session_state['sold_premium'] * st.session_state['lot_size'] - max((underlying - st.session_state['sold_strike']), 0) * st.session_state['lot_size']
             fig_pl.add_annotation(x=underlying, y=current_pl, text=f"Current P&L: ₹{current_pl:,.2f}", 
                                  showarrow=True, arrowhead=1)
+            
+            # Add P&L = 0 line
             fig_pl.add_hline(y=0, line_dash="dash", line_color="gray", annotation_text="P&L = 0", 
                             annotation_position="right")
+            
             st.plotly_chart(fig_pl, use_container_width=True)
 
             st.subheader("OI Change Analysis for Nearby Strikes")
@@ -731,13 +682,16 @@ def main():
         else:
             st.info("Enter P&L Simulator values to see Greeks analysis")
 
+    # Trade Suggestions Tab with Call Selling Recommendations
     with tabs[7]:
+        # Display key metrics at the top
         col1, col2, col3, col4 = st.columns(4)
         col1.metric("Underlying", f"{underlying:.2f}")
         col2.metric("PCR", f"{pcr:.2f}")
         col3.metric("Max Pain", f"{max_pain:.2f}")
         col4.metric("Expiry", expiry)
 
+        #st.subheader("Call Selling Recommendations")
         recommendations, top_pick = generate_call_selling_recommendations(
             call_df, put_df, underlying, max_pain, pcr, support_strike, resistance_strike, 
             risk_tolerance, oi_threshold, days_to_expiry, implied_volatility, risk_free_rate, 
@@ -747,12 +701,19 @@ def main():
         if recommendations[0]["Strike"] is None:
             st.warning("No favorable call selling opportunities found.")
         else:
+            # Create a DataFrame for the table
             recommendations_df = pd.DataFrame(recommendations)
             recommendations_df = recommendations_df[['Strike', 'Premium', 'OI', 'Distance_from_Resistance', 
                                                     'Theta', 'Risk_Reward', 'Suggestion', 'Reason']]
             
+            # Display the table with a border and header using st.table
             st.write("### Recommendations Table")
-            styled_df = recommendations_df.style.format({
+            # Use st.table with custom styling for borders and header
+            styled_df = recommendations_df.style.set_table_styles([
+                # {'selector': 'th', 'props': [('background-color', '#f0f0f0'), ('font-weight', 'bold'), ('border', '1px solid black')]},
+                # {'selector': 'td', 'props': [('border', '1px solid black')]},
+                # {'selector': 'table', 'props': [('border-collapse', 'collapse'), ('width', '100%')]}
+            ]).format({
                 'Strike': '{:.2f}',
                 'Premium': '{:.2f}',
                 'OI': '{:.0f}',
@@ -762,13 +723,24 @@ def main():
             })
             st.table(styled_df)
 
-            if top_pick and enable_telegram_alerts and telegram_bot_token and telegram_chat_id:
-                if 'last_top_pick' not in st.session_state or st.session_state['last_top_pick'] != top_pick:
-                    alert_message = get_alert_template(top_pick, ticker, expiry, underlying)
-                    asyncio.run(send_telegram_message(telegram_bot_token, telegram_chat_id, alert_message))
-                    st.session_state['last_top_pick'] = top_pick
-                    st.success("Telegram alert sent for top pick!")
+            # # Display the table with a button in each row
+            # for index, row in recommendations_df.iterrows():
+            #     cols = st.columns([1, 1, 1, 1, 1, 1, 1, 2, 1])
+            #     cols[0].write(f"{row['Strike']:.2f}")
+            #     cols[1].write(f"{row['Premium']:.2f}")
+            #     cols[2].write(f"{row['OI']:.0f}")
+            #     cols[3].write(f"{row['Distance_from_Resistance']:.2f}")
+            #     cols[4].write(f"{row['Theta']:.4f}")
+            #     cols[5].write(f"{row['Risk_Reward']:.4f}")
+            #     cols[6].write(row['Suggestion'])
+            #     cols[7].write(row['Reason'])
+            #     if cols[8].button("Select", key=f"select_trade_{index}"):
+            #         st.session_state['sold_strike'] = row['Strike']
+            #         st.session_state['sold_premium'] = row['Premium']
+            #         # Lot size is not updated here; it remains manually entered
+            #         st.rerun()
 
+            # Display Top Pick with green background
             if top_pick:
                 st.markdown(
                     f"<div style='background-color: #d4edda; padding: 10px; border-radius: 5px;'>"
@@ -777,49 +749,6 @@ def main():
                     unsafe_allow_html=True
                 )
 
-    with tabs[8]:
-        st.subheader("Trade Screener")
-        uploaded_file = st.file_uploader("Upload CSV with 'SYMBOL' column", type=["csv"])
-        proximity_percent = st.number_input("Proximity to Resistance (%):", value=1.0, step=0.2, min_value=-10.0, max_value=10.0,
-                                            help="Positive: Below resistance; Negative: Above resistance")
-        scan_button = st.button("Scan Trades")
-        
-        if uploaded_file and scan_button:
-            df = pd.read_csv(uploaded_file)
-            if 'SYMBOL' not in df.columns:
-                st.error("CSV must contain a 'SYMBOL' column")
-            else:
-                screener_tickers = df['SYMBOL'].dropna().tolist()
-                if screener_tickers:
-                    with st.spinner("Scanning trades..."):
-                        suggestions = generate_smart_trade_suggestions(
-                            screener_tickers, expiry, 
-                            telegram_bot_token if enable_telegram_alerts else "", 
-                            telegram_chat_id if enable_telegram_alerts else "",
-                            proximity_percent  # Pass the user-defined percentage
-                        )
-                        st.session_state['screener_suggestions'] = suggestions
-                else:
-                    st.warning("No valid tickers found in the uploaded CSV.")
-        
-        if st.session_state['screener_suggestions'] is not None:
-            if st.session_state['screener_suggestions']:
-                suggestions_df = pd.DataFrame(st.session_state['screener_suggestions'])
-                st.write("### Smart Trade Suggestions")
-                styled_df = suggestions_df.style.format({
-                    'Underlying': '{:.2f}',
-                    'Strike': '{:.2f}',
-                    'Premium': '{:.2f}',
-                    'Resistance': '{:.2f}',
-                    'Distance_to_Resistance': '{:.2f}'
-                })
-                st.table(styled_df)
-            else:
-                st.info(f"No smart trade suggestions found based on the {proximity_percent}% resistance proximity criteria.")
-        elif uploaded_file:
-            st.info("Click 'Scan Trades' to analyze the uploaded CSV.")
-        else:
-            st.info("Please upload a CSV file with ticker symbols and click 'Scan Trades' to scan for smart trades.")
     if auto_refresh:
         time.sleep(30)
         st.session_state['refresh_key'] = time.time()
