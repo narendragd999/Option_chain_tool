@@ -3,5 +3,5 @@ pandas
 requests
 plotly
 scipy
-cloudscraper+
+cloudscraper
 aiohttp
