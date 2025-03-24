@@ -5,3 +5,5 @@ plotly
 scipy
 cloudscraper
 aiohttp
+yfinance
+pandas-datareader
