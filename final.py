@@ -1009,7 +1009,7 @@ def main():
                                 f"Premium: *₹{suggestion['Premium']:.2f}*\n"
                                 f"Reason: *{suggestion['Reason']}*\n\n"
                             )
-                        #asyncio.run(send_telegram_message(telegram_bot_token, telegram_chat_id, message))
+                        asyncio.run(send_telegram_message(telegram_bot_token, telegram_chat_id, message))
             else:
                 st.warning(f"No tickers found in {STORED_TICKERS_PATH}. Please upload a CSV with 'SYMBOL' column.")
         
