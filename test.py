@@ -56,7 +56,8 @@ def load_config() -> Dict:
         "telegram_bot_token": "",
         "telegram_chat_id": "",
         "auto_scan_enabled": False,
-        "auto_scan_interval": 15  # Default to 15 minutes
+        "auto_scan_interval": 15,  # Default to 15 minutes
+        "enable_telegram_alerts": True  # Added enable_telegram_alerts to default config
     }
     if os.path.exists(CONFIG_FILE):
         with open(CONFIG_FILE, 'r') as f:
@@ -438,18 +439,24 @@ def generate_smart_trade_suggestions(tickers: List[str], expiry: str, bot_token:
 
 def get_yesterday_open_price(ticker: str, current_underlying: float) -> float:
     try:
+        print(ticker)
+        print(current_underlying)
         ticker_ns = f"{ticker}.NS" if not ticker.endswith(".NS") else ticker
         stock = yf.Ticker(ticker_ns)
-        data = stock.history(period="5d")
+        data = stock.history(period="1d")
         
-        if len(data) < 2:
-            print(f"Insufficient data for {ticker_ns}, using current underlying as fallback.")
+        if data.empty or len(data) < 2:
+            print(f"Insufficient or no data for {ticker_ns}, using current underlying as fallback.")
             return current_underlying
-        
+        print(data)
         yesterday_open = data['Open'].iloc[-2]
+        if pd.isna(yesterday_open):
+            print(f"No valid yesterday's open price for {ticker_ns}, using current underlying.")
+            return current_underlying
+
         return yesterday_open
     except Exception as e:
-        print(f"Error fetching data for {ticker}: {e}")
+        print(f"Error fetching data for {ticker_ns}: {e}")
         return current_underlying
 
 def generate_lost_momentum_suggestions(tickers: List[str], expiry: str, bot_token: str, chat_id: str) -> List[Dict]:
@@ -558,8 +565,8 @@ def main():
     with st.sidebar:
         tickers = load_fno_tickers()
         ticker = st.selectbox("Select NSE Ticker:", tickers, 
-                            index=tickers.index("HDFCBANK") if "HDFCBANK" in tickers else 0)
-        auto_refresh = st.checkbox("Auto-Refresh (30s)")
+                             index=tickers.index("HDFCBANK") if "HDFCBANK" in tickers else 0)
+        auto_refresh = st.checkbox("Auto-Refresh (30s)", key="auto_refresh_checkbox")
         if st.button("Refresh Now"):
             st.session_state['refresh_key'] = time.time()
         
@@ -585,14 +592,29 @@ def main():
         resistance_color = st.color_picker("Resistance Line Color:", value="#800080")
 
         st.subheader("Telegram Integration")
-        telegram_bot_token = st.text_input("Telegram Bot Token:", value=st.session_state['telegram_config']['telegram_bot_token'], type="password")
-        telegram_chat_id = st.text_input("Telegram Chat ID:", value=st.session_state['telegram_config']['telegram_chat_id'])
-        if telegram_bot_token != st.session_state['telegram_config']['telegram_bot_token'] or telegram_chat_id != st.session_state['telegram_config']['telegram_chat_id']:
-            st.session_state['telegram_config'] = {"telegram_bot_token": telegram_bot_token, "telegram_chat_id": telegram_chat_id}
-            save_config(st.session_state['telegram_config'])
-        enable_telegram_alerts = st.checkbox("Enable Telegram Alerts", value=True)
-        if enable_telegram_alerts and (not telegram_bot_token or not telegram_chat_id):
-            st.warning("Telegram alerts are enabled but Bot Token or Chat ID is missing. Please configure them.")
+        telegram_bot_token = st.text_input("Telegram Bot Token:", 
+                                     value=st.session_state['telegram_config']['telegram_bot_token'], 
+                                     type="password")
+        telegram_chat_id = st.text_input("Telegram Chat ID:", 
+                                   value=st.session_state['telegram_config']['telegram_chat_id'])
+        enable_telegram_alerts = st.checkbox("Enable Telegram Alerts", 
+                                       value=st.session_state['telegram_config']['enable_telegram_alerts'],
+                                       key="telegram_alerts_checkbox")
+        
+        st.subheader("Automation Settings")
+        auto_scan_enabled = st.checkbox("Enable Auto-Scan", 
+                                      value=st.session_state['telegram_config']['auto_scan_enabled'],
+                                      key="auto_scan_checkbox")
+        auto_scan_interval = st.number_input("Auto-Scan Interval (minutes):", 
+                                           value=st.session_state['telegram_config']['auto_scan_interval'], 
+                                           min_value=1, step=1, key="auto_scan_interval_input")
+
+        # if telegram_bot_token != st.session_state['telegram_config']['telegram_bot_token'] or telegram_chat_id != st.session_state['telegram_config']['telegram_chat_id']:
+        #     st.session_state['telegram_config'] = {"telegram_bot_token": telegram_bot_token, "telegram_chat_id": telegram_chat_id}
+        #     save_config(st.session_state['telegram_config'])
+        # enable_telegram_alerts = st.checkbox("Enable Telegram Alerts", value=True)
+        # if enable_telegram_alerts and (not telegram_bot_token or not telegram_chat_id):
+        #     st.warning("Telegram alerts are enabled but Bot Token or Chat ID is missing. Please configure them.")
 
         st.subheader("Upload Ticker CSV")
         uploaded_file = st.file_uploader("Upload CSV with 'SYMBOL' column to replace stored tickers", type=["csv"])
@@ -605,23 +627,24 @@ def main():
             else:
                 st.error("Uploaded CSV must contain a 'SYMBOL' column")
 
-        st.subheader("Automation Settings")
-        auto_scan_interval = st.number_input("Auto-Scan Interval (minutes):", value=st.session_state['telegram_config']['auto_scan_interval'], 
-                                            min_value=1, step=1, key="auto_scan_interval_input")
-        auto_scan_enabled = st.checkbox("Enable Auto-Scan", value=st.session_state['telegram_config']['auto_scan_enabled'])
-
-        # Update config if changed
-        if (telegram_bot_token != st.session_state['telegram_config']['telegram_bot_token'] or 
+        
+        # Update config if any value changed
+        if (telegram_bot_token != st.session_state['telegram_config']['telegram_bot_token'] or
             telegram_chat_id != st.session_state['telegram_config']['telegram_chat_id'] or
+            enable_telegram_alerts != st.session_state['telegram_config']['enable_telegram_alerts'] or
             auto_scan_enabled != st.session_state['telegram_config']['auto_scan_enabled'] or
             auto_scan_interval != st.session_state['telegram_config']['auto_scan_interval']):
             st.session_state['telegram_config'] = {
                 "telegram_bot_token": telegram_bot_token,
                 "telegram_chat_id": telegram_chat_id,
+                "enable_telegram_alerts": enable_telegram_alerts,
                 "auto_scan_enabled": auto_scan_enabled,
                 "auto_scan_interval": auto_scan_interval
             }
             save_config(st.session_state['telegram_config'])
+
+        if enable_telegram_alerts and (not telegram_bot_token or not telegram_chat_id):
+            st.warning("Telegram alerts are enabled but Bot Token or Chat ID is missing. Please configure them.")
 
     # Data Fetching and Processing
     st.session_state.setdefault('refresh_key', time.time())
@@ -902,7 +925,7 @@ def main():
             })
             st.table(styled_df)
 
-            if top_pick and enable_telegram_alerts and telegram_bot_token and telegram_chat_id:
+            if top_pick and st.session_state['telegram_config']['enable_telegram_alerts'] and telegram_bot_token and telegram_chat_id:
                 if 'last_top_pick' not in st.session_state or st.session_state['last_top_pick'] != top_pick:
                     alert_message = get_alert_template(top_pick, ticker, expiry, underlying)
                     #asyncio.run(send_telegram_message(telegram_bot_token, telegram_chat_id, alert_message))
@@ -944,7 +967,7 @@ def main():
                     st.session_state['screener_suggestions'] = suggestions
                     
                     # Send Telegram message with results
-                    if suggestions and enable_telegram_alerts and telegram_bot_token and telegram_chat_id:
+                    if suggestions and st.session_state['telegram_config']['enable_telegram_alerts'] and telegram_bot_token and telegram_chat_id:
                         message = f"*Smart Trade Suggestions (Auto-Scan every {st.session_state['telegram_config']['auto_scan_interval']} min)*\n"
                         for suggestion in suggestions:
                             message += (
@@ -996,7 +1019,7 @@ def main():
                     st.session_state['momentum_suggestions'] = suggestions
                     
                     # Send Telegram message with results
-                    if suggestions and enable_telegram_alerts and telegram_bot_token and telegram_chat_id:
+                    if suggestions and st.session_state['telegram_config']['enable_telegram_alerts'] and telegram_bot_token and telegram_chat_id:
                         message = f"*Lost Momentum Suggestions (Auto-Scan every {st.session_state['telegram_config']['auto_scan_interval']} min)*\n"
                         for suggestion in suggestions:
                             message += (
