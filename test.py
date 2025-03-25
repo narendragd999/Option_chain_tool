@@ -96,7 +96,7 @@ async def send_telegram_message(bot_token: str, chat_id: str, message: str):
 
 def get_alert_template(recommendation: Dict, ticker: str, expiry: str, underlying: float = None) -> str:
     template = (
-        "*SELL CALL ALERT*\n"
+        "*SELL CALL ALERT TRIGGERED*\n"
         f"Stock: *{ticker}*\n"
         f"Strike: *{recommendation['Strike']:.2f}*\n"
         f"Expiry: *{expiry}*\n"

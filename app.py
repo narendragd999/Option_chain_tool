@@ -77,7 +77,7 @@ async def send_telegram_message(bot_token: str, chat_id: str, message: str):
 def get_alert_template(recommendation: Dict, ticker: str, expiry: str, underlying: float = None) -> str:
     """Generate a formatted alert message for Telegram."""
     template = (
-        "*SELL CALL ALERT*\n"
+        "*SELL CALL ALERT GOT*\n"
         f"Stock: *{ticker}*\n"
         f"Strike: *{recommendation['Strike']:.2f}*\n"
         f"Expiry: *{expiry}*\n"
