@@ -96,7 +96,7 @@ async def send_telegram_message(bot_token: str, chat_id: str, message: str):
 
 def get_alert_template(recommendation: Dict, ticker: str, expiry: str, underlying: float = None) -> str:
     template = (
-        "*SELL CALL ALERT TRIGGERED*\n"
+        "*SELL CALL ALERT NEW*\n"
         f"Stock: *{ticker}*\n"
         f"Strike: *{recommendation['Strike']:.2f}*\n"
         f"Expiry: *{expiry}*\n"
@@ -902,12 +902,12 @@ def main():
             })
             st.table(styled_df)
 
-            #if top_pick and enable_telegram_alerts and telegram_bot_token and telegram_chat_id:
-                #if 'last_top_pick' not in st.session_state or st.session_state['last_top_pick'] != top_pick:
-                    #alert_message = get_alert_template(top_pick, ticker, expiry, underlying)
+            if top_pick and enable_telegram_alerts and telegram_bot_token and telegram_chat_id:
+                if 'last_top_pick' not in st.session_state or st.session_state['last_top_pick'] != top_pick:
+                    alert_message = get_alert_template(top_pick, ticker, expiry, underlying)
                     #asyncio.run(send_telegram_message(telegram_bot_token, telegram_chat_id, alert_message))
-                    #st.session_state['last_top_pick'] = top_pick
-                    #st.success("Telegram alert sent for top pick!")
+                    st.session_state['last_top_pick'] = top_pick
+                    st.success("Telegram alert sent for top pick!")
 
             if top_pick:
                 st.markdown(

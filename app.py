@@ -49,10 +49,21 @@ time.sleep(2)
 
 # Load/Save Telegram Config
 def load_config() -> Dict:
+    default_config = {
+        "telegram_bot_token": "",
+        "telegram_chat_id": "",
+        "auto_scan_enabled": False,
+        "auto_scan_interval": 15
+    }
     if os.path.exists(CONFIG_FILE):
-        with open(CONFIG_FILE, 'r') as f:
-            return json.load(f)
-    return {"telegram_bot_token": "", "telegram_chat_id": ""}
+        try:
+            with open(CONFIG_FILE, 'r') as f:
+                config = json.load(f)
+                return {**default_config, **config}  # Merge defaults with loaded config
+        except Exception as e:
+            print(f"Error loading config file: {e}")
+            return default_config
+    return default_config
 
 def save_config(config: Dict):
     with open(CONFIG_FILE, 'w') as f:
