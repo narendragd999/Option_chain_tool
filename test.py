@@ -123,10 +123,18 @@ def fetch_options_data(symbol: str, _refresh_key: float) -> Optional[Dict]:
 
 def process_option_data(data: Dict, expiry: str) -> Tuple[pd.DataFrame, pd.DataFrame]:
     if not data or 'records' not in data or 'data' not in data['records']:
+        print("Invalid data, using fallback")
         return get_fallback_data()
     
     options = [item for item in data['records']['data'] if item.get('expiryDate') == expiry]
+    if not options:
+        print(f"No options found for expiry {expiry}, using fallback")
+        return get_fallback_data()
+    
     strikes = sorted({item['strikePrice'] for item in options})
+    if not strikes:
+        print("No strikes found, using fallback")
+        return get_fallback_data()
     
     call_data = {s: {'OI': 0, 'Change_in_OI': 0, 'LTP': 0, 'Volume': 0} for s in strikes}
     put_data = {s: {'OI': 0, 'Change_in_OI': 0, 'LTP': 0, 'Volume': 0} for s in strikes}
@@ -142,8 +150,10 @@ def process_option_data(data: Dict, expiry: str) -> Tuple[pd.DataFrame, pd.DataF
                               {'OI': 'openInterest', 'Change_in_OI': 'changeinOpenInterest', 
                                'LTP': 'lastPrice', 'Volume': 'totalTradedVolume'}.items()}
     
-    return (pd.DataFrame([{'Strike': k, **v} for k, v in call_data.items()]),
-            pd.DataFrame([{'Strike': k, **v} for k, v in put_data.items()]))
+    call_df = pd.DataFrame([{'Strike': k, **v} for k, v in call_data.items()])
+    put_df = pd.DataFrame([{'Strike': k, **v} for k, v in put_data.items()])
+    
+    return call_df, put_df
 
 def get_fallback_data() -> Tuple[pd.DataFrame, pd.DataFrame]:
     strikes = range(700, 861, 20)
@@ -463,6 +473,16 @@ def generate_lost_momentum_suggestions(tickers: List[str], expiry: str, bot_toke
     suggestions = []
     refresh_key = time.time()
     
+    try:
+        tickers_df = pd.read_csv(STORED_TICKERS_PATH)
+        if 'SYMBOL' not in tickers_df.columns or 'YESTERDAY_OPEN_PRICE' not in tickers_df.columns:
+            print(f"Error: {STORED_TICKERS_PATH} must contain 'SYMBOL' and 'YESTERDAY_OPEN_PRICE' columns")
+            return suggestions
+        ticker_open_prices = dict(zip(tickers_df['SYMBOL'], tickers_df['YESTERDAY_OPEN_PRICE']))
+    except Exception as e:
+        print(f"Error loading {STORED_TICKERS_PATH}: {e}")
+        return suggestions
+    
     for ticker in tickers:
         with st.spinner(f"Fetching data for {ticker}..."):
             data = fetch_options_data(ticker, refresh_key)
@@ -471,14 +491,28 @@ def generate_lost_momentum_suggestions(tickers: List[str], expiry: str, bot_toke
                 continue
             
             call_df, put_df = process_option_data(data, expiry)
+            if 'Strike' not in call_df.columns:
+                print(f"No 'Strike' column in call_df for {ticker}, skipping")
+                continue
+            
             underlying = data['records'].get('underlyingValue', 0)
             support_strike, resistance_strike = identify_support_resistance(call_df, put_df)
             
-            yesterday_open = get_yesterday_open_price(ticker, underlying)
+            yesterday_open = ticker_open_prices.get(ticker, None)
+            if yesterday_open is None:
+                print(f"No YESTERDAY_OPEN_PRICE found for {ticker}, skipping")
+                continue
+            
+            try:
+                yesterday_open = float(yesterday_open)
+            except (ValueError, TypeError):
+                print(f"Invalid YESTERDAY_OPEN_PRICE for {ticker}: {yesterday_open}, skipping")
+                continue
             
             if yesterday_open > underlying:
                 otm_calls = call_df[call_df['Strike'] > underlying]
                 if otm_calls.empty:
+                    print(f"No OTM calls available for {ticker}")
                     continue
                 nearest_strike = otm_calls['Strike'].iloc[0]
                 premium = otm_calls[otm_calls['Strike'] == nearest_strike]['LTP'].iloc[0]
@@ -493,6 +527,7 @@ def generate_lost_momentum_suggestions(tickers: List[str], expiry: str, bot_toke
                     "Suggestion": "Sell Call"
                 }
                 suggestions.append(suggestion)
+                #print(f"Suggestion generated for {ticker}: {suggestion}")
     
     return suggestions
 
@@ -557,6 +592,8 @@ def main():
         st.session_state['momentum_suggestions'] = None
     if 'last_scan_time' not in st.session_state:
         st.session_state['last_scan_time'] = time.time() - (config['auto_scan_interval'] * 60)  # Start ready to scan
+    if 'ticker' not in st.session_state:
+        st.session_state['ticker'] = 'HDFCBANK'  # Default ticker    
 
     # Check and trigger auto-scan
     check_and_trigger_auto_scan()    
@@ -566,6 +603,7 @@ def main():
         tickers = load_fno_tickers()
         ticker = st.selectbox("Select NSE Ticker:", tickers, 
                              index=tickers.index("HDFCBANK") if "HDFCBANK" in tickers else 0)
+        st.session_state['ticker'] = ticker  # Store selected ticker
         auto_refresh = st.checkbox("Auto-Refresh (30s)", key="auto_refresh_checkbox")
         if st.button("Refresh Now"):
             st.session_state['refresh_key'] = time.time()
