@@ -932,45 +932,45 @@ def main():
         else:
             st.info("Enter P&L Simulator values to see Greeks analysis")
 
-    with tabs[7]:
-        col1, col2, col3, col4 = st.columns(4)
-        col1.metric("Underlying", f"{underlying:.2f}")
-        col2.metric("PCR", f"{pcr:.2f}")
-        col3.metric("Max Pain", f"{max_pain:.2f}")
-        col4.metric("Expiry", expiry)
+    # with tabs[7]:
+    #     col1, col2, col3, col4 = st.columns(4)
+    #     col1.metric("Underlying", f"{underlying:.2f}")
+    #     col2.metric("PCR", f"{pcr:.2f}")
+    #     col3.metric("Max Pain", f"{max_pain:.2f}")
+    #     col4.metric("Expiry", expiry)
 
-        recommendations, top_pick = generate_call_selling_recommendations(
-            call_df, put_df, underlying, max_pain, pcr, support_strike, resistance_strike, 
-            risk_tolerance, oi_threshold, days_to_expiry, implied_volatility, risk_free_rate, 
-            st.session_state['lot_size']
-        )
+    #     recommendations, top_pick = generate_call_selling_recommendations(
+    #         call_df, put_df, underlying, max_pain, pcr, support_strike, resistance_strike, 
+    #         risk_tolerance, oi_threshold, days_to_expiry, implied_volatility, risk_free_rate, 
+    #         st.session_state['lot_size']
+    #     )
         
-        if recommendations[0]["Strike"] is None:
-            st.warning("No favorable call selling opportunities found.")
-        else:
-            recommendations_df = pd.DataFrame(recommendations)
-            recommendations_df = recommendations_df[['Strike', 'Premium', 'OI', 'Distance_from_Resistance', 
-                                                    'Theta', 'Risk_Reward', 'Suggestion', 'Reason']]
+    #     if recommendations[0]["Strike"] is None:
+    #         st.warning("No favorable call selling opportunities found.")
+    #     else:
+    #         recommendations_df = pd.DataFrame(recommendations)
+    #         recommendations_df = recommendations_df[['Strike', 'Premium', 'OI', 'Distance_from_Resistance', 
+    #                                                 'Theta', 'Risk_Reward', 'Suggestion', 'Reason']]
             
-            st.write("### Recommendations Table")
-            styled_df = recommendations_df.style.format({
-                'Strike': '{:.2f}',
-                'Premium': '{:.2f}',
-                'OI': '{:.0f}',
-                'Distance_from_Resistance': '{:.2f}',
-                'Theta': '{:.4f}',
-                'Risk_Reward': '{:.4f}'
-            })
-            st.table(styled_df) 
+    #         st.write("### Recommendations Table")
+    #         styled_df = recommendations_df.style.format({
+    #             'Strike': '{:.2f}',
+    #             'Premium': '{:.2f}',
+    #             'OI': '{:.0f}',
+    #             'Distance_from_Resistance': '{:.2f}',
+    #             'Theta': '{:.4f}',
+    #             'Risk_Reward': '{:.4f}'
+    #         })
+    #         st.table(styled_df) 
 
             
-            if top_pick:
-                st.markdown(
-                    f"<div style='background-color: #d4edda; padding: 10px; border-radius: 5px;'>"
-                    f"<b>Top Pick:</b> Sell {top_pick['Strike']} Call @ ₹{top_pick['Premium']:.2f} | <b>Reason:</b> {top_pick['Reason']}"
-                    f"</div>",
-                    unsafe_allow_html=True
-                )
+    #         if top_pick:
+    #             st.markdown(
+    #                 f"<div style='background-color: #d4edda; padding: 10px; border-radius: 5px;'>"
+    #                 f"<b>Top Pick:</b> Sell {top_pick['Strike']} Call @ ₹{top_pick['Premium']:.2f} | <b>Reason:</b> {top_pick['Reason']}"
+    #                 f"</div>",
+    #                 unsafe_allow_html=True
+    #             )
 
     with tabs[8]:
         st.subheader("Trade Screener")
