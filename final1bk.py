@@ -535,58 +535,31 @@ def check_and_trigger_auto_scan():
     current_time = time.time()
     auto_scan_interval_seconds = st.session_state['telegram_config']['auto_scan_interval'] * 60
     
-    time_since_last_scan = current_time - st.session_state['last_scan_time']
-    print(f"Checking auto-scan: current_time={current_time}, last_scan_time={st.session_state['last_scan_time']}, "
-          f"interval={auto_scan_interval_seconds}, enabled={st.session_state['telegram_config']['auto_scan_enabled']}, "
-          f"time_since_last_scan={time_since_last_scan}")
     
-    #print(f"session variable--{st.session_state}")
     if (st.session_state['telegram_config']['auto_scan_enabled'] and 
-        time_since_last_scan >= auto_scan_interval_seconds):
-        print("Auto-scan triggered!")
-        
-        # Ensure expiry is set
-        if 'expiry' not in st.session_state or not st.session_state['expiry']:
-            data = fetch_options_data(st.session_state['ticker'], time.time())
-            if data and 'records' in data and 'expiryDates' in data['records']:
-                st.session_state['expiry'] = data['records']['expiryDates'][0]
-            else:
-                print("Failed to set default expiry")
-                return
-        
-        # Trade Screener scan
+        current_time - st.session_state['last_scan_time'] >= auto_scan_interval_seconds):
+        # Trigger scans for both Trade Screener and Lost Momentum        
         screener_tickers = load_tickers()
         if screener_tickers:
             suggestions = generate_smart_trade_suggestions(
-                screener_tickers, st.session_state['expiry'],
-                st.session_state['telegram_config']['telegram_bot_token'] if st.session_state['telegram_config']['enable_telegram_alerts'] else "",
-                st.session_state['telegram_config']['telegram_chat_id'] if st.session_state['telegram_config']['enable_telegram_alerts'] else "",
+                screener_tickers, st.session_state.get('expiry', ''), 
+                st.session_state['telegram_config']['telegram_bot_token'] if st.session_state.get('enable_telegram_alerts', False) else "", 
+                st.session_state['telegram_config']['telegram_chat_id'] if st.session_state.get('enable_telegram_alerts', False) else "",
                 st.session_state.get('proximity_percent', 1.0)
             )
             st.session_state['screener_suggestions'] = suggestions
-            print(f"Screener suggestions: {len(suggestions)} found")
-        else:
-            print("No screener tickers available")
         
-        # Lost Momentum scan
         momentum_tickers = load_tickers()
         if momentum_tickers:
             momentum_suggestions = generate_lost_momentum_suggestions(
-                momentum_tickers, st.session_state['expiry'],
-                st.session_state['telegram_config']['telegram_bot_token'] if st.session_state['telegram_config']['enable_telegram_alerts'] else "",
-                st.session_state['telegram_config']['telegram_chat_id'] if st.session_state['telegram_config']['enable_telegram_alerts'] else ""
+                momentum_tickers, st.session_state.get('expiry', ''),
+                st.session_state['telegram_config']['telegram_bot_token'] if st.session_state.get('enable_telegram_alerts', False) else "",
+                st.session_state['telegram_config']['telegram_chat_id'] if st.session_state.get('enable_telegram_alerts', False) else ""
             )
             st.session_state['momentum_suggestions'] = momentum_suggestions
-            print(f"Momentum suggestions: {len(momentum_suggestions)} found")
-        else:
-            print("No momentum tickers available")
         
-        # Update last_scan_time only after successful scan
         st.session_state['last_scan_time'] = current_time
-        print(f"Updated last_scan_time to {st.session_state['last_scan_time']}")
-        st.rerun()  # Force a rerun to update the UI
-    else:
-        print(f"Auto-scan not triggered: time_since_last_scan={time_since_last_scan} < interval={auto_scan_interval_seconds}")
+        st.rerun()  # Force a rerun to update the UI with new suggestions
 
 # Main Application
 def main():
@@ -597,10 +570,6 @@ def main():
     config = load_config()
     if 'telegram_config' not in st.session_state:
         st.session_state['telegram_config'] = config
-
-    # Initialize Session State
-    if 'last_scan_time' not in st.session_state:
-        st.session_state['last_scan_time'] = time.time()  # Start fresh
 
     #print(st.session_state['telegram_config'])
     
@@ -621,12 +590,10 @@ def main():
         st.session_state['screener_suggestions'] = None
     if 'momentum_suggestions' not in st.session_state:
         st.session_state['momentum_suggestions'] = None
-    #if 'last_scan_time' not in st.session_state:
-     #   st.session_state['last_scan_time'] = time.time() - (config['auto_scan_interval'] * 60)  # Start ready to scan
+    if 'last_scan_time' not in st.session_state:
+        st.session_state['last_scan_time'] = time.time() - (config['auto_scan_interval'] * 60)  # Start ready to scan
     if 'ticker' not in st.session_state:
         st.session_state['ticker'] = 'HDFCBANK'  # Default ticker    
-    if 'refresh_key' not in st.session_state:
-        st.session_state['refresh_key'] = time.time()
 
     # Check and trigger auto-scan
     check_and_trigger_auto_scan()    
@@ -672,7 +639,7 @@ def main():
                                        value=st.session_state['telegram_config']['enable_telegram_alerts'],
                                        key="telegram_alerts_checkbox")
         
-        st.subheader("Automation Settings")        
+        st.subheader("Automation Settings")
         auto_scan_enabled = st.checkbox("Enable Auto-Scan", 
                                       value=st.session_state['telegram_config']['auto_scan_enabled'],
                                       key="auto_scan_checkbox")
@@ -700,43 +667,33 @@ def main():
 
         
         # Update config if any value changed
-        # if (telegram_bot_token != st.session_state['telegram_config']['telegram_bot_token'] or
-        #     telegram_chat_id != st.session_state['telegram_config']['telegram_chat_id'] or
-        #     enable_telegram_alerts != st.session_state['telegram_config']['enable_telegram_alerts'] or
-        #     auto_scan_enabled != st.session_state['telegram_config']['auto_scan_enabled'] or
-        #     auto_scan_interval != st.session_state['telegram_config']['auto_scan_interval']):
-        #     st.session_state['telegram_config'] = {
-        #         "telegram_bot_token": telegram_bot_token,
-        #         "telegram_chat_id": telegram_chat_id,
-        #         "enable_telegram_alerts": enable_telegram_alerts,
-        #         "auto_scan_enabled": auto_scan_enabled,
-        #         "auto_scan_interval": auto_scan_interval
-        #     }
-        #     save_config(st.session_state['telegram_config'])
-
-        # Update config if changed
-        if (st.session_state['telegram_config']['auto_scan_enabled'] != auto_scan_enabled or
-            st.session_state['telegram_config']['auto_scan_interval'] != auto_scan_interval):
-            st.session_state['telegram_config']['auto_scan_enabled'] = auto_scan_enabled
-            st.session_state['telegram_config']['auto_scan_interval'] = auto_scan_interval
-            save_config(st.session_state['telegram_config'])    
+        if (telegram_bot_token != st.session_state['telegram_config']['telegram_bot_token'] or
+            telegram_chat_id != st.session_state['telegram_config']['telegram_chat_id'] or
+            enable_telegram_alerts != st.session_state['telegram_config']['enable_telegram_alerts'] or
+            auto_scan_enabled != st.session_state['telegram_config']['auto_scan_enabled'] or
+            auto_scan_interval != st.session_state['telegram_config']['auto_scan_interval']):
+            st.session_state['telegram_config'] = {
+                "telegram_bot_token": telegram_bot_token,
+                "telegram_chat_id": telegram_chat_id,
+                "enable_telegram_alerts": enable_telegram_alerts,
+                "auto_scan_enabled": auto_scan_enabled,
+                "auto_scan_interval": auto_scan_interval
+            }
+            save_config(st.session_state['telegram_config'])
 
         if enable_telegram_alerts and (not telegram_bot_token or not telegram_chat_id):
             st.warning("Telegram alerts are enabled but Bot Token or Chat ID is missing. Please configure them.")
 
-    
     # Data Fetching and Processing
     st.session_state.setdefault('refresh_key', time.time())
-    with st.spinner(f"Fetching data for {st.session_state['ticker']}..."):
-        data = fetch_options_data(st.session_state['ticker'], st.session_state['refresh_key'])
+    with st.spinner(f"Fetching data for {ticker}..."):
+        data = fetch_options_data(ticker, st.session_state['refresh_key'])
     
     if not data or 'records' not in data:
         st.error("Failed to load data!")
         return
     
     expiry = st.selectbox("Select Expiry:", data['records']['expiryDates'], index=0)
-    st.session_state['expiry'] = expiry
-
     call_df, put_df = process_option_data(data, expiry)
     underlying = data['records'].get('underlyingValue', 812)
     max_pain = calculate_max_pain(call_df, put_df)
@@ -1129,24 +1086,13 @@ def main():
     #     st.session_state['refresh_key'] = time.time()
     #     st.rerun()
 
-    # Check auto-scan periodically
-    check_and_trigger_auto_scan()
-
-    # Auto-refresh logic without sleep    
-    auto_refresh = st.session_state.get('auto_refresh_checkbox', False)
-    if auto_refresh or st.session_state['telegram_config']['auto_scan_enabled']:
-        current_time = time.time()
-        if auto_refresh and current_time - st.session_state['refresh_key'] >= 120:
-            st.session_state['refresh_key'] = current_time
-            st.rerun()
-
     # Combined auto-refresh and auto-scan logic
-    # if auto_refresh or st.session_state['telegram_config']['auto_scan_enabled']:
-    #     check_interval = min(30, auto_scan_interval_seconds)  # Use the smaller of 30s or auto-scan interval
-    #     time.sleep(check_interval)
-    #     st.session_state['refresh_key'] = time.time()
-    #     check_and_trigger_auto_scan()  # Check and run scan if due
-    #     st.rerun()
+    if auto_refresh or st.session_state['telegram_config']['auto_scan_enabled']:
+        check_interval = min(30, auto_scan_interval_seconds)  # Use the smaller of 30s or auto-scan interval
+        time.sleep(check_interval)
+        st.session_state['refresh_key'] = time.time()
+        check_and_trigger_auto_scan()  # Check and run scan if due
+        st.rerun()
 
 if __name__ == "__main__":
     main()

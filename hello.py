@@ -16,6 +16,7 @@ import aiohttp
 import asyncio
 import yfinance as yf
 from datetime import datetime, timedelta
+#from time import time, sleep
 
 # Create a cloudscraper session
 scraper = cloudscraper.create_scraper()
@@ -26,7 +27,7 @@ USER_AGENTS = [
     'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.114 Safari/537.36'
 ]
 BASE_URL = "https://www.nseindia.com"
-STORED_TICKERS_PATH = "stored_tickers.csv"  # Persistent CSV file
+STORED_TICKERS_PATH = "stored_tickers.csv"
 ALERTS_FILE = "alerts.json"
 CONFIG_FILE = "config.json"
 TICKER_PATH = "tickers.csv"
@@ -56,13 +57,13 @@ def load_config() -> Dict:
         "telegram_bot_token": "",
         "telegram_chat_id": "",
         "auto_scan_enabled": False,
-        "auto_scan_interval": 15,  # Default to 15 minutes
-        "enable_telegram_alerts": True  # Added enable_telegram_alerts to default config
+        "auto_scan_interval": 15,
+        "enable_telegram_alerts": True,
+        "proximity_to_resistance": 1.0  # Add default proximity value
     }
     if os.path.exists(CONFIG_FILE):
         with open(CONFIG_FILE, 'r') as f:
             config = json.load(f)
-            # Ensure all keys exist, fill with defaults if missing
             for key, value in default_config.items():
                 if key not in config:
                     config[key] = value
@@ -71,7 +72,7 @@ def load_config() -> Dict:
 
 def save_config(config: Dict):
     with open(CONFIG_FILE, 'w') as f:
-        json.dump(config, f)
+        json.dump(config, f, indent=4)  # indent for readability
 
 # Telegram Integration
 async def send_telegram_message(bot_token: str, chat_id: str, message: str):
@@ -80,11 +81,7 @@ async def send_telegram_message(bot_token: str, chat_id: str, message: str):
         return
     
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-    payload = {
-        "chat_id": chat_id,
-        "text": message,
-        "parse_mode": "Markdown"
-    }
+    payload = {"chat_id": chat_id, "text": message, "parse_mode": "Markdown"}
     async with aiohttp.ClientSession() as session:
         async with session.post(url, json=payload) as response:
             response_text = await response.text()
@@ -95,6 +92,7 @@ async def send_telegram_message(bot_token: str, chat_id: str, message: str):
             else:
                 st.success(f"Telegram message sent successfully: {message}")
 
+# ... (other unchanged functions like fetch_options_data, process_option_data, etc.) ...
 def get_alert_template(recommendation: Dict, ticker: str, expiry: str, underlying: float = None) -> str:
     template = (
         "*SELL CALL ALERT NEW*\n"
@@ -540,7 +538,6 @@ def check_and_trigger_auto_scan():
           f"interval={auto_scan_interval_seconds}, enabled={st.session_state['telegram_config']['auto_scan_enabled']}, "
           f"time_since_last_scan={time_since_last_scan}")
     
-    #print(f"session variable--{st.session_state}")
     if (st.session_state['telegram_config']['auto_scan_enabled'] and 
         time_since_last_scan >= auto_scan_interval_seconds):
         print("Auto-scan triggered!")
@@ -554,41 +551,34 @@ def check_and_trigger_auto_scan():
                 print("Failed to set default expiry")
                 return
         
-        # Trade Screener scan
-        screener_tickers = load_tickers()
-        if screener_tickers:
-            suggestions = generate_smart_trade_suggestions(
-                screener_tickers, st.session_state['expiry'],
-                st.session_state['telegram_config']['telegram_bot_token'] if st.session_state['telegram_config']['enable_telegram_alerts'] else "",
-                st.session_state['telegram_config']['telegram_chat_id'] if st.session_state['telegram_config']['enable_telegram_alerts'] else "",
-                st.session_state.get('proximity_percent', 1.0)
-            )
-            st.session_state['screener_suggestions'] = suggestions
-            print(f"Screener suggestions: {len(suggestions)} found")
-        else:
-            print("No screener tickers available")
+        # Set flags to trigger scans in the tabs
+        st.session_state['scan_trades_trigger'] = True
+        st.session_state['scan_momentum_trigger'] = True
         
-        # Lost Momentum scan
-        momentum_tickers = load_tickers()
-        if momentum_tickers:
-            momentum_suggestions = generate_lost_momentum_suggestions(
-                momentum_tickers, st.session_state['expiry'],
-                st.session_state['telegram_config']['telegram_bot_token'] if st.session_state['telegram_config']['enable_telegram_alerts'] else "",
-                st.session_state['telegram_config']['telegram_chat_id'] if st.session_state['telegram_config']['enable_telegram_alerts'] else ""
-            )
-            st.session_state['momentum_suggestions'] = momentum_suggestions
-            print(f"Momentum suggestions: {len(momentum_suggestions)} found")
-        else:
-            print("No momentum tickers available")
-        
-        # Update last_scan_time only after successful scan
+        # Update last_scan_time
         st.session_state['last_scan_time'] = current_time
         print(f"Updated last_scan_time to {st.session_state['last_scan_time']}")
         st.rerun()  # Force a rerun to update the UI
     else:
         print(f"Auto-scan not triggered: time_since_last_scan={time_since_last_scan} < interval={auto_scan_interval_seconds}")
 
-# Main Application
+# Add this function near other helper functions
+# Corrected handle_auto_refresh function
+def handle_auto_refresh():
+    """Handle auto-refresh logic independently."""
+    auto_refresh = st.session_state.get('auto_refresh_checkbox', False)
+    if not auto_refresh:
+        return
+    
+    current_time = time.time()  # Use time() if imported as from time import time, otherwise time.time()
+    last_refresh = st.session_state.get('refresh_key', time.time())  # Same here
+    refresh_interval = 30  # 30 seconds as per checkbox label
+    
+    if current_time - last_refresh >= refresh_interval:
+        st.session_state['refresh_key'] = current_time
+        st.session_state['last_refresh_time_display'] = datetime.now().strftime("%H:%M:%S")
+        st.rerun()       
+
 def main():
     st.set_page_config(page_title="Options Chain Analysis", layout="wide")
     st.title("Options Chain Analysis")
@@ -600,11 +590,7 @@ def main():
 
     # Initialize Session State
     if 'last_scan_time' not in st.session_state:
-        st.session_state['last_scan_time'] = time.time()  # Start fresh
-
-    #print(st.session_state['telegram_config'])
-    
-    # Initialize Session State
+        st.session_state['last_scan_time'] = time.time()
     if 'alerts' not in st.session_state:
         st.session_state['alerts'] = load_alerts()
     if 'triggered_alerts' not in st.session_state:
@@ -621,26 +607,34 @@ def main():
         st.session_state['screener_suggestions'] = None
     if 'momentum_suggestions' not in st.session_state:
         st.session_state['momentum_suggestions'] = None
-    #if 'last_scan_time' not in st.session_state:
-     #   st.session_state['last_scan_time'] = time.time() - (config['auto_scan_interval'] * 60)  # Start ready to scan
     if 'ticker' not in st.session_state:
-        st.session_state['ticker'] = 'HDFCBANK'  # Default ticker    
+        st.session_state['ticker'] = 'HDFCBANK'
     if 'refresh_key' not in st.session_state:
         st.session_state['refresh_key'] = time.time()
+    if 'last_refresh_time_display' not in st.session_state:
+        st.session_state['last_refresh_time_display'] = "Not refreshed yet"    
+    if 'scan_trades_trigger' not in st.session_state:
+        st.session_state['scan_trades_trigger'] = False
+    if 'scan_momentum_trigger' not in st.session_state:
+        st.session_state['scan_momentum_trigger'] = False
 
     # Check and trigger auto-scan
-    check_and_trigger_auto_scan()    
-        
+    check_and_trigger_auto_scan()
+    
     # Sidebar Configuration
     with st.sidebar:
         tickers = load_fno_tickers()
         ticker = st.selectbox("Select NSE Ticker:", tickers, 
                              index=tickers.index("HDFCBANK") if "HDFCBANK" in tickers else 0)
-        st.session_state['ticker'] = ticker  # Store selected ticker
+        st.session_state['ticker'] = ticker
         auto_refresh = st.checkbox("Auto-Refresh (30s)", key="auto_refresh_checkbox")
         if st.button("Refresh Now"):
-            st.session_state['refresh_key'] = time.time()
+            st.session_state['refresh_key'] = time.time()  # Corrected
+            st.session_state['last_refresh_time_display'] = datetime.now().strftime("%H:%M:%S")
+            st.rerun()
         
+        st.write(f"Last Refreshed: {st.session_state['last_refresh_time_display']}")
+
         st.subheader("Trade Parameters")
         risk_tolerance = st.number_input("Risk Tolerance (₹):", value=5000.0, step=1000.0)
         
@@ -649,7 +643,8 @@ def main():
                                                         placeholder="Enter strike", key="sold_strike_input")
         st.session_state['sold_premium'] = st.number_input("Sold Premium:", value=st.session_state['sold_premium'], 
                                                          placeholder="Enter premium", key="sold_premium_input")
-        st.session_state['lot_size'] = st.number_input("Lot Size:", value=st.session_state['lot_size'], step=1.0, key="lot_size_input")        
+        st.session_state['lot_size'] = st.number_input("Lot Size:", value=st.session_state['lot_size'], step=1.0, key="lot_size_input")
+        
         st.subheader("Adjustment Inputs")
         oi_threshold = st.number_input("OI Change Threshold:", value=500.0, step=1000.0)
 
@@ -672,7 +667,7 @@ def main():
                                        value=st.session_state['telegram_config']['enable_telegram_alerts'],
                                        key="telegram_alerts_checkbox")
         
-        st.subheader("Automation Settings")        
+        st.subheader("Automation Settings")
         auto_scan_enabled = st.checkbox("Enable Auto-Scan", 
                                       value=st.session_state['telegram_config']['auto_scan_enabled'],
                                       key="auto_scan_checkbox")
@@ -680,12 +675,16 @@ def main():
                                            value=st.session_state['telegram_config']['auto_scan_interval'], 
                                            min_value=1, step=1, key="auto_scan_interval_input")
 
-        # if telegram_bot_token != st.session_state['telegram_config']['telegram_bot_token'] or telegram_chat_id != st.session_state['telegram_config']['telegram_chat_id']:
-        #     st.session_state['telegram_config'] = {"telegram_bot_token": telegram_bot_token, "telegram_chat_id": telegram_chat_id}
-        #     save_config(st.session_state['telegram_config'])
-        # enable_telegram_alerts = st.checkbox("Enable Telegram Alerts", value=True)
-        # if enable_telegram_alerts and (not telegram_bot_token or not telegram_chat_id):
-        #     st.warning("Telegram alerts are enabled but Bot Token or Chat ID is missing. Please configure them.")
+        # Add Proximity to Resistance input in the sidebar
+        proximity_to_resistance = st.number_input(
+            "Proximity to Resistance (%):",
+            value=st.session_state['telegram_config']['proximity_to_resistance'],
+            step=0.2,
+            min_value=-10.0,
+            max_value=10.0,
+            help="Positive: Below resistance; Negative: Above resistance",
+            key="proximity_to_resistance_input"
+        )
 
         st.subheader("Upload Ticker CSV")
         uploaded_file = st.file_uploader("Upload CSV with 'SYMBOL' column to replace stored tickers", type=["csv"])
@@ -694,37 +693,42 @@ def main():
             if 'SYMBOL' in df.columns:
                 df.to_csv(STORED_TICKERS_PATH, index=False)
                 st.success(f"Tickers updated and saved to {STORED_TICKERS_PATH}")
-                st.session_state['refresh_key'] = time.time()  # Trigger refresh
+                st.session_state['refresh_key'] = time.time()
             else:
                 st.error("Uploaded CSV must contain a 'SYMBOL' column")
-
-        
-        # Update config if any value changed
-        # if (telegram_bot_token != st.session_state['telegram_config']['telegram_bot_token'] or
-        #     telegram_chat_id != st.session_state['telegram_config']['telegram_chat_id'] or
-        #     enable_telegram_alerts != st.session_state['telegram_config']['enable_telegram_alerts'] or
-        #     auto_scan_enabled != st.session_state['telegram_config']['auto_scan_enabled'] or
-        #     auto_scan_interval != st.session_state['telegram_config']['auto_scan_interval']):
-        #     st.session_state['telegram_config'] = {
-        #         "telegram_bot_token": telegram_bot_token,
-        #         "telegram_chat_id": telegram_chat_id,
-        #         "enable_telegram_alerts": enable_telegram_alerts,
-        #         "auto_scan_enabled": auto_scan_enabled,
-        #         "auto_scan_interval": auto_scan_interval
-        #     }
-        #     save_config(st.session_state['telegram_config'])
 
         # Update config if changed
         if (st.session_state['telegram_config']['auto_scan_enabled'] != auto_scan_enabled or
             st.session_state['telegram_config']['auto_scan_interval'] != auto_scan_interval):
             st.session_state['telegram_config']['auto_scan_enabled'] = auto_scan_enabled
             st.session_state['telegram_config']['auto_scan_interval'] = auto_scan_interval
-            save_config(st.session_state['telegram_config'])    
+            st.session_state['telegram_config']['proximity_to_resistance'] = proximity_to_resistance
+            save_config(st.session_state['telegram_config'])
+
+        # Update config if any settings changed
+        # config_changed = False
+        # if st.session_state['telegram_config']['auto_scan_enabled'] != auto_scan_enabled:
+        #     st.session_state['telegram_config']['auto_scan_enabled'] = auto_scan_enabled
+        #     config_changed = True
+        # if st.session_state['telegram_config']['auto_scan_interval'] != auto_scan_interval:
+        #     st.session_state['telegram_config']['auto_scan_interval'] = auto_scan_interval
+        #     config_changed = True
+        # if st.session_state['telegram_config']['telegram_bot_token'] != telegram_bot_token:
+        #     st.session_state['telegram_config']['telegram_bot_token'] = telegram_bot_token
+        #     config_changed = True
+        # if st.session_state['telegram_config']['telegram_chat_id'] != telegram_chat_id:
+        #     st.session_state['telegram_config']['telegram_chat_id'] = telegram_chat_id
+        #     config_changed = True
+        # if st.session_state['telegram_config']['enable_telegram_alerts'] != enable_telegram_alerts:
+        #     st.session_state['telegram_config']['enable_telegram_alerts'] = enable_telegram_alerts
+        #     config_changed = True
+        # if st.session_state['telegram_config']['proximity_to_resistance'] != proximity_to_resistance:
+        #     st.session_state['telegram_config']['proximity_to_resistance'] = proximity_to_resistance
+        #     config_changed = True
 
         if enable_telegram_alerts and (not telegram_bot_token or not telegram_chat_id):
             st.warning("Telegram alerts are enabled but Bot Token or Chat ID is missing. Please configure them.")
 
-    
     # Data Fetching and Processing
     st.session_state.setdefault('refresh_key', time.time())
     with st.spinner(f"Fetching data for {st.session_state['ticker']}..."):
@@ -773,6 +777,7 @@ def main():
     
     tabs = st.tabs(["Data", "OI Analysis", "Volume Analysis", "Price Analysis", "P&L Analysis", "Heatmap", "Greeks", "Trade Suggestions", "Trade Screener", "Lost Momentum"])
 
+    # ... (unchanged tabs from 0 to 7) ...
     # Existing Tabs (unchanged until "Trade Screener")
     with tabs[0]:
         col1, col2 = st.columns(2)
@@ -1017,19 +1022,13 @@ def main():
 
     with tabs[8]:
         st.subheader("Trade Screener")
-        proximity_percent = st.number_input("Proximity to Resistance (%):", value=1.0, step=0.2, min_value=-10.0, max_value=10.0,
-                                            help="Positive: Below resistance; Negative: Above resistance")
+        # Use the value from config instead of local variable
+        st.write(f"Current Proximity to Resistance: {st.session_state['telegram_config']['proximity_to_resistance']}% "
+                 "(configurable in sidebar)")
         scan_button = st.button("Scan Trades")
         
-        # Auto-scan if enabled, using configurable interval
-        current_time = time.time()
-        auto_scan_interval_seconds = st.session_state['telegram_config']['auto_scan_interval'] * 60
-        if (st.session_state['telegram_config']['auto_scan_enabled'] and 
-            current_time - st.session_state['last_scan_time'] >= auto_scan_interval_seconds):
-            scan_button = True
-            st.session_state['last_scan_time'] = current_time
-        
-        if scan_button:
+        # Trigger scan if button clicked or auto-scan flag is set
+        if scan_button or st.session_state['scan_trades_trigger']:
             screener_tickers = load_tickers()
             if screener_tickers:
                 with st.spinner("Scanning trades..."):
@@ -1037,7 +1036,7 @@ def main():
                         screener_tickers, expiry, 
                         telegram_bot_token if enable_telegram_alerts else "", 
                         telegram_chat_id if enable_telegram_alerts else "",
-                        proximity_percent
+                        st.session_state['telegram_config']['proximity_to_resistance']  # Use config value
                     )
                     st.session_state['screener_suggestions'] = suggestions
                     
@@ -1055,6 +1054,9 @@ def main():
                         asyncio.run(send_telegram_message(telegram_bot_token, telegram_chat_id, message))
             else:
                 st.warning(f"No tickers found in {STORED_TICKERS_PATH}. Please upload a CSV with 'SYMBOL' column.")
+            
+            # Reset the trigger after execution
+            st.session_state['scan_trades_trigger'] = False
         
         if st.session_state['screener_suggestions'] is not None:
             if st.session_state['screener_suggestions']:
@@ -1069,7 +1071,7 @@ def main():
                 })
                 st.table(styled_df)
             else:
-                st.info(f"No smart trade suggestions found based on the {proximity_percent}% resistance proximity criteria using stored tickers.")
+                st.info(f"No smart trade suggestions found based on the {st.session_state['telegram_config']['proximity_to_resistance']}% resistance proximity criteria using stored tickers.")
         else:
             st.info(f"Click 'Scan Trades' or enable auto-scan to analyze tickers from {STORED_TICKERS_PATH}.")
 
@@ -1077,12 +1079,8 @@ def main():
         st.subheader("Lost Momentum Scanner")
         momentum_scan_button = st.button("Scan Lost Momentum")
         
-        # Auto-scan if enabled, using configurable interval
-        if (st.session_state['telegram_config']['auto_scan_enabled'] and 
-            current_time - st.session_state['last_scan_time'] >= auto_scan_interval_seconds):
-            momentum_scan_button = True
-        
-        if momentum_scan_button:
+        # Trigger scan if button clicked or auto-scan flag is set
+        if momentum_scan_button or st.session_state['scan_momentum_trigger']:
             momentum_tickers = load_tickers()
             if momentum_tickers:
                 with st.spinner("Scanning for lost momentum..."):
@@ -1108,6 +1106,9 @@ def main():
                         asyncio.run(send_telegram_message(telegram_bot_token, telegram_chat_id, message))
             else:
                 st.warning(f"No tickers found in {STORED_TICKERS_PATH}. Please upload a CSV with 'SYMBOL' column.")
+            
+            # Reset the trigger after execution
+            st.session_state['scan_momentum_trigger'] = False
         
         if st.session_state['momentum_suggestions'] is not None:
             if st.session_state['momentum_suggestions']:
@@ -1124,29 +1125,16 @@ def main():
                 st.info(f"No tickers found with lost momentum using stored tickers from {STORED_TICKERS_PATH}.")
         else:
             st.info(f"Click 'Scan Lost Momentum' or enable auto-scan to analyze tickers from {STORED_TICKERS_PATH}.")
-    # if auto_refresh:
-    #     time.sleep(30)
-    #     st.session_state['refresh_key'] = time.time()
-    #     st.rerun()
 
-    # Check auto-scan periodically
-    check_and_trigger_auto_scan()
-
-    # Auto-refresh logic without sleep    
+    # Auto-refresh logic without sleep
     auto_refresh = st.session_state.get('auto_refresh_checkbox', False)
     if auto_refresh or st.session_state['telegram_config']['auto_scan_enabled']:
         current_time = time.time()
-        if auto_refresh and current_time - st.session_state['refresh_key'] >= 120:
+        if auto_refresh and current_time - st.session_state['refresh_key'] >= 30:
             st.session_state['refresh_key'] = current_time
             st.rerun()
 
-    # Combined auto-refresh and auto-scan logic
-    # if auto_refresh or st.session_state['telegram_config']['auto_scan_enabled']:
-    #     check_interval = min(30, auto_scan_interval_seconds)  # Use the smaller of 30s or auto-scan interval
-    #     time.sleep(check_interval)
-    #     st.session_state['refresh_key'] = time.time()
-    #     check_and_trigger_auto_scan()  # Check and run scan if due
-    #     st.rerun()
+    handle_auto_refresh()        
 
 if __name__ == "__main__":
     main()
