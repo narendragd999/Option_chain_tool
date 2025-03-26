@@ -1,1 +1,8 @@
-{"telegram_bot_token": "8185651783:AAH_zy4XHpPebpygeTfQJIddxWUTHGsy3aM", "telegram_chat_id": "542581131", "auto_scan_enabled": true, "auto_scan_interval": 15}
+{
+    "telegram_bot_token": "7826437102:AAFdVAv7b0go3wOcPLNMZMVAfRM8O2SX3xQ",
+    "telegram_chat_id": "542581131",
+    "enable_telegram_alerts": true,
+    "auto_scan_enabled": true,
+    "auto_scan_interval": 2,
+    "proximity_to_resistance": 1.0
+}

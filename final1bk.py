@@ -14,6 +14,8 @@ from streamlit.components.v1 import html
 import cloudscraper
 import aiohttp
 import asyncio
+import yfinance as yf
+from datetime import datetime, timedelta
 
 # Create a cloudscraper session
 scraper = cloudscraper.create_scraper()
@@ -24,9 +26,10 @@ USER_AGENTS = [
     'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.114 Safari/537.36'
 ]
 BASE_URL = "https://www.nseindia.com"
-TICKER_PATH = "tickers.csv"
+STORED_TICKERS_PATH = "stored_tickers.csv"  # Persistent CSV file
 ALERTS_FILE = "alerts.json"
-CONFIG_FILE = "config.json"  # New config file for Telegram settings
+CONFIG_FILE = "config.json"
+TICKER_PATH = "tickers.csv"
 
 # Headers mimicking your browser
 headers = {
@@ -47,12 +50,24 @@ print("Visiting derivatives page...")
 scraper.get("https://www.nseindia.com/market-data/equity-derivatives-watch", headers=headers)
 time.sleep(2)
 
-# Load/Save Telegram Config
+# Load/Save Telegram Config and Auto-Scan Settings
 def load_config() -> Dict:
+    default_config = {
+        "telegram_bot_token": "",
+        "telegram_chat_id": "",
+        "auto_scan_enabled": False,
+        "auto_scan_interval": 15,  # Default to 15 minutes
+        "enable_telegram_alerts": True  # Added enable_telegram_alerts to default config
+    }
     if os.path.exists(CONFIG_FILE):
         with open(CONFIG_FILE, 'r') as f:
-            return json.load(f)
-    return {"telegram_bot_token": "", "telegram_chat_id": ""}
+            config = json.load(f)
+            # Ensure all keys exist, fill with defaults if missing
+            for key, value in default_config.items():
+                if key not in config:
+                    config[key] = value
+            return config
+    return default_config
 
 def save_config(config: Dict):
     with open(CONFIG_FILE, 'w') as f:
@@ -60,6 +75,10 @@ def save_config(config: Dict):
 
 # Telegram Integration
 async def send_telegram_message(bot_token: str, chat_id: str, message: str):
+    if not bot_token or not chat_id:
+        st.error("Telegram Bot Token or Chat ID is missing. Please configure them in the sidebar.")
+        return
+    
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
     payload = {
         "chat_id": chat_id,
@@ -68,16 +87,17 @@ async def send_telegram_message(bot_token: str, chat_id: str, message: str):
     }
     async with aiohttp.ClientSession() as session:
         async with session.post(url, json=payload) as response:
+            response_text = await response.text()
             if response.status != 200:
-                st.error(f"Failed to send Telegram message: {await response.text()}")
+                st.error(f"Failed to send Telegram message: {response_text}")
+                if response.status == 404:
+                    st.warning("Check your Bot Token and Chat ID. They might be invalid or the bot might not be added to the chat.")
             else:
-                print(f"Telegram message sent successfully: {message}")
+                st.success(f"Telegram message sent successfully: {message}")
 
-# Updated get_alert_template
 def get_alert_template(recommendation: Dict, ticker: str, expiry: str, underlying: float = None) -> str:
-    """Generate a formatted alert message for Telegram."""
     template = (
-        "*SELL CALL ALERT*\n"
+        "*SELL CALL ALERT NEW*\n"
         f"Stock: *{ticker}*\n"
         f"Strike: *{recommendation['Strike']:.2f}*\n"
         f"Expiry: *{expiry}*\n"
@@ -103,10 +123,18 @@ def fetch_options_data(symbol: str, _refresh_key: float) -> Optional[Dict]:
 
 def process_option_data(data: Dict, expiry: str) -> Tuple[pd.DataFrame, pd.DataFrame]:
     if not data or 'records' not in data or 'data' not in data['records']:
+        print("Invalid data, using fallback")
         return get_fallback_data()
     
     options = [item for item in data['records']['data'] if item.get('expiryDate') == expiry]
+    if not options:
+        print(f"No options found for expiry {expiry}, using fallback")
+        return get_fallback_data()
+    
     strikes = sorted({item['strikePrice'] for item in options})
+    if not strikes:
+        print("No strikes found, using fallback")
+        return get_fallback_data()
     
     call_data = {s: {'OI': 0, 'Change_in_OI': 0, 'LTP': 0, 'Volume': 0} for s in strikes}
     put_data = {s: {'OI': 0, 'Change_in_OI': 0, 'LTP': 0, 'Volume': 0} for s in strikes}
@@ -122,8 +150,10 @@ def process_option_data(data: Dict, expiry: str) -> Tuple[pd.DataFrame, pd.DataF
                               {'OI': 'openInterest', 'Change_in_OI': 'changeinOpenInterest', 
                                'LTP': 'lastPrice', 'Volume': 'totalTradedVolume'}.items()}
     
-    return (pd.DataFrame([{'Strike': k, **v} for k, v in call_data.items()]),
-            pd.DataFrame([{'Strike': k, **v} for k, v in put_data.items()]))
+    call_df = pd.DataFrame([{'Strike': k, **v} for k, v in call_data.items()])
+    put_df = pd.DataFrame([{'Strike': k, **v} for k, v in put_data.items()])
+    
+    return call_df, put_df
 
 def get_fallback_data() -> Tuple[pd.DataFrame, pd.DataFrame]:
     strikes = range(700, 861, 20)
@@ -151,7 +181,7 @@ def calculate_max_pain(call_df: pd.DataFrame, put_df: pd.DataFrame) -> float:
     return strikes[losses.index(min(losses))]
 
 @st.cache_data
-def load_tickers() -> List[str]:
+def load_fno_tickers() -> List[str]:
     try:
         df = pd.read_csv(TICKER_PATH)
         if 'SYMBOL' not in df.columns:
@@ -159,6 +189,22 @@ def load_tickers() -> List[str]:
             return ["HDFCBANK"]
         tickers = df['SYMBOL'].dropna().tolist()
         return tickers if tickers else ["HDFCBANK"]
+    except Exception as e:
+        st.error(f"Error loading tickers: {e}")
+        return ["HDFCBANK"]
+
+#@st.cache_data
+def load_tickers() -> List[str]:
+    try:
+        if os.path.exists(STORED_TICKERS_PATH):
+            df = pd.read_csv(STORED_TICKERS_PATH)
+            if 'SYMBOL' not in df.columns:
+                st.error("Stored CSV file must contain 'SYMBOL' column")
+                return ["HDFCBANK"]
+            tickers = df['SYMBOL'].dropna().tolist()            
+            return tickers if tickers else ["HDFCBANK"]
+        else:
+            return ["HDFCBANK"]  # Default if no file exists
     except Exception as e:
         st.error(f"Error loading tickers: {e}")
         return ["HDFCBANK"]
@@ -339,8 +385,6 @@ def generate_call_selling_recommendations(call_df: pd.DataFrame, put_df: pd.Data
     
     return recommendations, top_pick
 
-
-# Updated generate_smart_trade_suggestions
 def generate_smart_trade_suggestions(tickers: List[str], expiry: str, bot_token: str, chat_id: str, proximity_percent: float) -> List[Dict]:
     suggestions = []
     refresh_key = time.time()
@@ -359,13 +403,10 @@ def generate_smart_trade_suggestions(tickers: List[str], expiry: str, bot_token:
             if resistance_strike is None:
                 continue
             
-            # Calculate proximity threshold based on user input (converted from percentage to decimal)
             proximity_threshold = resistance_strike * (abs(proximity_percent) / 100)
             distance_to_resistance = resistance_strike - underlying
             
-            # Check if underlying is within the specified range (positive or negative proximity)
             if proximity_percent >= 0:
-                # Positive percentage: Underlying below or at resistance within threshold
                 if 0 <= distance_to_resistance <= proximity_threshold:
                     otm_calls = call_df[call_df['Strike'] > underlying]
                     if otm_calls.empty:
@@ -384,12 +425,7 @@ def generate_smart_trade_suggestions(tickers: List[str], expiry: str, bot_token:
                         "Suggestion": "Sell Call"
                     }
                     suggestions.append(suggestion)
-                    
-                    if bot_token and chat_id:
-                        alert_message = get_alert_template(suggestion, ticker, expiry, suggestion['Underlying'])
-                        #asyncio.run(send_telegram_message(bot_token, chat_id, alert_message))
             else:
-                # Negative percentage: Underlying above resistance within threshold
                 if -proximity_threshold <= distance_to_resistance <= 0:
                     otm_calls = call_df[call_df['Strike'] > underlying]
                     if otm_calls.empty:
@@ -408,12 +444,122 @@ def generate_smart_trade_suggestions(tickers: List[str], expiry: str, bot_token:
                         "Suggestion": "Sell Call"
                     }
                     suggestions.append(suggestion)
-                    
-                    if bot_token and chat_id:
-                        alert_message = get_alert_template(suggestion, ticker, expiry, suggestion['Underlying'])
-                        #asyncio.run(send_telegram_message(bot_token, chat_id, alert_message))
     
     return suggestions
+
+def get_yesterday_open_price(ticker: str, current_underlying: float) -> float:
+    try:
+        print(ticker)
+        print(current_underlying)
+        ticker_ns = f"{ticker}.NS" if not ticker.endswith(".NS") else ticker
+        stock = yf.Ticker(ticker_ns)
+        data = stock.history(period="1d")
+        
+        if data.empty or len(data) < 2:
+            print(f"Insufficient or no data for {ticker_ns}, using current underlying as fallback.")
+            return current_underlying
+        print(data)
+        yesterday_open = data['Open'].iloc[-2]
+        if pd.isna(yesterday_open):
+            print(f"No valid yesterday's open price for {ticker_ns}, using current underlying.")
+            return current_underlying
+
+        return yesterday_open
+    except Exception as e:
+        print(f"Error fetching data for {ticker_ns}: {e}")
+        return current_underlying
+
+def generate_lost_momentum_suggestions(tickers: List[str], expiry: str, bot_token: str, chat_id: str) -> List[Dict]:
+    suggestions = []
+    refresh_key = time.time()
+    
+    try:
+        tickers_df = pd.read_csv(STORED_TICKERS_PATH)
+        if 'SYMBOL' not in tickers_df.columns or 'YESTERDAY_OPEN_PRICE' not in tickers_df.columns:
+            print(f"Error: {STORED_TICKERS_PATH} must contain 'SYMBOL' and 'YESTERDAY_OPEN_PRICE' columns")
+            return suggestions
+        ticker_open_prices = dict(zip(tickers_df['SYMBOL'], tickers_df['YESTERDAY_OPEN_PRICE']))
+    except Exception as e:
+        print(f"Error loading {STORED_TICKERS_PATH}: {e}")
+        return suggestions
+    
+    for ticker in tickers:
+        with st.spinner(f"Fetching data for {ticker}..."):
+            data = fetch_options_data(ticker, refresh_key)
+            if not data or 'records' not in data:
+                print(f"Failed to fetch data for {ticker}")
+                continue
+            
+            call_df, put_df = process_option_data(data, expiry)
+            if 'Strike' not in call_df.columns:
+                print(f"No 'Strike' column in call_df for {ticker}, skipping")
+                continue
+            
+            underlying = data['records'].get('underlyingValue', 0)
+            support_strike, resistance_strike = identify_support_resistance(call_df, put_df)
+            
+            yesterday_open = ticker_open_prices.get(ticker, None)
+            if yesterday_open is None:
+                print(f"No YESTERDAY_OPEN_PRICE found for {ticker}, skipping")
+                continue
+            
+            try:
+                yesterday_open = float(yesterday_open)
+            except (ValueError, TypeError):
+                print(f"Invalid YESTERDAY_OPEN_PRICE for {ticker}: {yesterday_open}, skipping")
+                continue
+            
+            if yesterday_open > underlying:
+                otm_calls = call_df[call_df['Strike'] > underlying]
+                if otm_calls.empty:
+                    print(f"No OTM calls available for {ticker}")
+                    continue
+                nearest_strike = otm_calls['Strike'].iloc[0]
+                premium = otm_calls[otm_calls['Strike'] == nearest_strike]['LTP'].iloc[0]
+                
+                suggestion = {
+                    "Ticker": ticker,
+                    "Yesterday_Open": yesterday_open,
+                    "Underlying": underlying,
+                    "Strike": nearest_strike,
+                    "Premium": premium,
+                    "Reason": f"Lost momentum: Yesterday Open ({yesterday_open:.2f}) > Current ({underlying:.2f})",
+                    "Suggestion": "Sell Call"
+                }
+                suggestions.append(suggestion)
+                #print(f"Suggestion generated for {ticker}: {suggestion}")
+    
+    return suggestions
+
+def check_and_trigger_auto_scan():
+    current_time = time.time()
+    auto_scan_interval_seconds = st.session_state['telegram_config']['auto_scan_interval'] * 60
+    
+    
+    if (st.session_state['telegram_config']['auto_scan_enabled'] and 
+        current_time - st.session_state['last_scan_time'] >= auto_scan_interval_seconds):
+        # Trigger scans for both Trade Screener and Lost Momentum        
+        screener_tickers = load_tickers()
+        if screener_tickers:
+            suggestions = generate_smart_trade_suggestions(
+                screener_tickers, st.session_state.get('expiry', ''), 
+                st.session_state['telegram_config']['telegram_bot_token'] if st.session_state.get('enable_telegram_alerts', False) else "", 
+                st.session_state['telegram_config']['telegram_chat_id'] if st.session_state.get('enable_telegram_alerts', False) else "",
+                st.session_state.get('proximity_percent', 1.0)
+            )
+            st.session_state['screener_suggestions'] = suggestions
+        
+        momentum_tickers = load_tickers()
+        if momentum_tickers:
+            momentum_suggestions = generate_lost_momentum_suggestions(
+                momentum_tickers, st.session_state.get('expiry', ''),
+                st.session_state['telegram_config']['telegram_bot_token'] if st.session_state.get('enable_telegram_alerts', False) else "",
+                st.session_state['telegram_config']['telegram_chat_id'] if st.session_state.get('enable_telegram_alerts', False) else ""
+            )
+            st.session_state['momentum_suggestions'] = momentum_suggestions
+        
+        st.session_state['last_scan_time'] = current_time
+        st.rerun()  # Force a rerun to update the UI with new suggestions
 
 # Main Application
 def main():
@@ -424,6 +570,8 @@ def main():
     config = load_config()
     if 'telegram_config' not in st.session_state:
         st.session_state['telegram_config'] = config
+
+    #print(st.session_state['telegram_config'])
     
     # Initialize Session State
     if 'alerts' not in st.session_state:
@@ -440,19 +588,28 @@ def main():
         st.session_state['lot_size'] = 100.0
     if 'screener_suggestions' not in st.session_state:
         st.session_state['screener_suggestions'] = None
-    
+    if 'momentum_suggestions' not in st.session_state:
+        st.session_state['momentum_suggestions'] = None
+    if 'last_scan_time' not in st.session_state:
+        st.session_state['last_scan_time'] = time.time() - (config['auto_scan_interval'] * 60)  # Start ready to scan
+    if 'ticker' not in st.session_state:
+        st.session_state['ticker'] = 'HDFCBANK'  # Default ticker    
+
+    # Check and trigger auto-scan
+    check_and_trigger_auto_scan()    
+        
     # Sidebar Configuration
     with st.sidebar:
-        tickers = load_tickers()
+        tickers = load_fno_tickers()
         ticker = st.selectbox("Select NSE Ticker:", tickers, 
-                            index=tickers.index("HDFCBANK") if "HDFCBANK" in tickers else 0)
-        auto_refresh = st.checkbox("Auto-Refresh (30s)")
+                             index=tickers.index("HDFCBANK") if "HDFCBANK" in tickers else 0)
+        st.session_state['ticker'] = ticker  # Store selected ticker
+        auto_refresh = st.checkbox("Auto-Refresh (30s)", key="auto_refresh_checkbox")
         if st.button("Refresh Now"):
             st.session_state['refresh_key'] = time.time()
         
         st.subheader("Trade Parameters")
         risk_tolerance = st.number_input("Risk Tolerance (₹):", value=5000.0, step=1000.0)
-        
         
         st.subheader("P&L Simulator")
         st.session_state['sold_strike'] = st.number_input("Sold Call Strike:", value=st.session_state['sold_strike'], 
@@ -473,15 +630,59 @@ def main():
         resistance_color = st.color_picker("Resistance Line Color:", value="#800080")
 
         st.subheader("Telegram Integration")
-        telegram_bot_token = st.text_input("Telegram Bot Token:", value=st.session_state['telegram_config']['telegram_bot_token'], type="password")
-        telegram_chat_id = st.text_input("Telegram Chat ID:", value=st.session_state['telegram_config']['telegram_chat_id'])
-        if telegram_bot_token != st.session_state['telegram_config']['telegram_bot_token'] or telegram_chat_id != st.session_state['telegram_config']['telegram_chat_id']:
-            st.session_state['telegram_config'] = {"telegram_bot_token": telegram_bot_token, "telegram_chat_id": telegram_chat_id}
-            save_config(st.session_state['telegram_config'])
-        enable_telegram_alerts = st.checkbox("Enable Telegram Alerts", value=True)
+        telegram_bot_token = st.text_input("Telegram Bot Token:", 
+                                     value=st.session_state['telegram_config']['telegram_bot_token'], 
+                                     type="password")
+        telegram_chat_id = st.text_input("Telegram Chat ID:", 
+                                   value=st.session_state['telegram_config']['telegram_chat_id'])
+        enable_telegram_alerts = st.checkbox("Enable Telegram Alerts", 
+                                       value=st.session_state['telegram_config']['enable_telegram_alerts'],
+                                       key="telegram_alerts_checkbox")
+        
+        st.subheader("Automation Settings")
+        auto_scan_enabled = st.checkbox("Enable Auto-Scan", 
+                                      value=st.session_state['telegram_config']['auto_scan_enabled'],
+                                      key="auto_scan_checkbox")
+        auto_scan_interval = st.number_input("Auto-Scan Interval (minutes):", 
+                                           value=st.session_state['telegram_config']['auto_scan_interval'], 
+                                           min_value=1, step=1, key="auto_scan_interval_input")
 
-        st.subheader("Alerts")
-        # Existing alert configuration remains unchanged...
+        # if telegram_bot_token != st.session_state['telegram_config']['telegram_bot_token'] or telegram_chat_id != st.session_state['telegram_config']['telegram_chat_id']:
+        #     st.session_state['telegram_config'] = {"telegram_bot_token": telegram_bot_token, "telegram_chat_id": telegram_chat_id}
+        #     save_config(st.session_state['telegram_config'])
+        # enable_telegram_alerts = st.checkbox("Enable Telegram Alerts", value=True)
+        # if enable_telegram_alerts and (not telegram_bot_token or not telegram_chat_id):
+        #     st.warning("Telegram alerts are enabled but Bot Token or Chat ID is missing. Please configure them.")
+
+        st.subheader("Upload Ticker CSV")
+        uploaded_file = st.file_uploader("Upload CSV with 'SYMBOL' column to replace stored tickers", type=["csv"])
+        if uploaded_file:
+            df = pd.read_csv(uploaded_file)
+            if 'SYMBOL' in df.columns:
+                df.to_csv(STORED_TICKERS_PATH, index=False)
+                st.success(f"Tickers updated and saved to {STORED_TICKERS_PATH}")
+                st.session_state['refresh_key'] = time.time()  # Trigger refresh
+            else:
+                st.error("Uploaded CSV must contain a 'SYMBOL' column")
+
+        
+        # Update config if any value changed
+        if (telegram_bot_token != st.session_state['telegram_config']['telegram_bot_token'] or
+            telegram_chat_id != st.session_state['telegram_config']['telegram_chat_id'] or
+            enable_telegram_alerts != st.session_state['telegram_config']['enable_telegram_alerts'] or
+            auto_scan_enabled != st.session_state['telegram_config']['auto_scan_enabled'] or
+            auto_scan_interval != st.session_state['telegram_config']['auto_scan_interval']):
+            st.session_state['telegram_config'] = {
+                "telegram_bot_token": telegram_bot_token,
+                "telegram_chat_id": telegram_chat_id,
+                "enable_telegram_alerts": enable_telegram_alerts,
+                "auto_scan_enabled": auto_scan_enabled,
+                "auto_scan_interval": auto_scan_interval
+            }
+            save_config(st.session_state['telegram_config'])
+
+        if enable_telegram_alerts and (not telegram_bot_token or not telegram_chat_id):
+            st.warning("Telegram alerts are enabled but Bot Token or Chat ID is missing. Please configure them.")
 
     # Data Fetching and Processing
     st.session_state.setdefault('refresh_key', time.time())
@@ -499,7 +700,7 @@ def main():
     pcr = calculate_pcr(call_df, put_df)
     support_strike, resistance_strike = identify_support_resistance(call_df, put_df, top_n=3)
 
-    # Check Alerts (unchanged)
+    # Check Alerts
     triggered_alerts, alerts_to_remove = check_alerts(st.session_state['alerts'], ticker, underlying, call_df, put_df, 
                                                     st.session_state['sold_strike'], pcr)
     if alerts_to_remove:
@@ -527,8 +728,8 @@ def main():
     st.subheader(f"Underlying: {underlying:.2f}")
     st.metric("Max Pain Strike", f"{max_pain:.2f}")
     
-    tabs = st.tabs(["Data", "OI Analysis", "Volume Analysis", "Price Analysis", "P&L Analysis", "P&L/Heatmap", "Greeks Analysis", "Trade Suggestions", "Trade Screener"])
-    
+    tabs = st.tabs(["Data", "OI Analysis", "Volume Analysis", "Price Analysis", "P&L Analysis", "Heatmap", "Greeks", "Trade Suggestions", "Trade Screener", "Lost Momentum"])
+
     # Existing Tabs (unchanged until "Trade Screener")
     with tabs[0]:
         col1, col2 = st.columns(2)
@@ -760,15 +961,9 @@ def main():
                 'Theta': '{:.4f}',
                 'Risk_Reward': '{:.4f}'
             })
-            st.table(styled_df)
+            st.table(styled_df) 
 
-            if top_pick and enable_telegram_alerts and telegram_bot_token and telegram_chat_id:
-                if 'last_top_pick' not in st.session_state or st.session_state['last_top_pick'] != top_pick:
-                    alert_message = get_alert_template(top_pick, ticker, expiry, underlying)
-                    asyncio.run(send_telegram_message(telegram_bot_token, telegram_chat_id, alert_message))
-                    st.session_state['last_top_pick'] = top_pick
-                    st.success("Telegram alert sent for top pick!")
-
+            
             if top_pick:
                 st.markdown(
                     f"<div style='background-color: #d4edda; padding: 10px; border-radius: 5px;'>"
@@ -779,28 +974,44 @@ def main():
 
     with tabs[8]:
         st.subheader("Trade Screener")
-        uploaded_file = st.file_uploader("Upload CSV with 'SYMBOL' column", type=["csv"])
         proximity_percent = st.number_input("Proximity to Resistance (%):", value=1.0, step=0.2, min_value=-10.0, max_value=10.0,
                                             help="Positive: Below resistance; Negative: Above resistance")
         scan_button = st.button("Scan Trades")
         
-        if uploaded_file and scan_button:
-            df = pd.read_csv(uploaded_file)
-            if 'SYMBOL' not in df.columns:
-                st.error("CSV must contain a 'SYMBOL' column")
+        # Auto-scan if enabled, using configurable interval
+        current_time = time.time()
+        auto_scan_interval_seconds = st.session_state['telegram_config']['auto_scan_interval'] * 60
+        if (st.session_state['telegram_config']['auto_scan_enabled'] and 
+            current_time - st.session_state['last_scan_time'] >= auto_scan_interval_seconds):
+            scan_button = True
+            st.session_state['last_scan_time'] = current_time
+        
+        if scan_button:
+            screener_tickers = load_tickers()
+            if screener_tickers:
+                with st.spinner("Scanning trades..."):
+                    suggestions = generate_smart_trade_suggestions(
+                        screener_tickers, expiry, 
+                        telegram_bot_token if enable_telegram_alerts else "", 
+                        telegram_chat_id if enable_telegram_alerts else "",
+                        proximity_percent
+                    )
+                    st.session_state['screener_suggestions'] = suggestions
+                    
+                    # Send Telegram message with results
+                    if suggestions and st.session_state['telegram_config']['enable_telegram_alerts'] and telegram_bot_token and telegram_chat_id:
+                        message = f"*Smart Trade Suggestions (Auto-Scan every {st.session_state['telegram_config']['auto_scan_interval']} min)*\n"
+                        for suggestion in suggestions:
+                            message += (
+                                f"Stock: *{suggestion['Ticker']}*\n"
+                                f"Underlying: *₹{suggestion['Underlying']:.2f}*\n"
+                                f"Strike: *{suggestion['Strike']:.2f}*\n"
+                                f"Premium: *₹{suggestion['Premium']:.2f}*\n"
+                                f"Reason: *{suggestion['Reason']}*\n\n"
+                            )
+                        asyncio.run(send_telegram_message(telegram_bot_token, telegram_chat_id, message))
             else:
-                screener_tickers = df['SYMBOL'].dropna().tolist()
-                if screener_tickers:
-                    with st.spinner("Scanning trades..."):
-                        suggestions = generate_smart_trade_suggestions(
-                            screener_tickers, expiry, 
-                            telegram_bot_token if enable_telegram_alerts else "", 
-                            telegram_chat_id if enable_telegram_alerts else "",
-                            proximity_percent  # Pass the user-defined percentage
-                        )
-                        st.session_state['screener_suggestions'] = suggestions
-                else:
-                    st.warning("No valid tickers found in the uploaded CSV.")
+                st.warning(f"No tickers found in {STORED_TICKERS_PATH}. Please upload a CSV with 'SYMBOL' column.")
         
         if st.session_state['screener_suggestions'] is not None:
             if st.session_state['screener_suggestions']:
@@ -815,14 +1026,72 @@ def main():
                 })
                 st.table(styled_df)
             else:
-                st.info(f"No smart trade suggestions found based on the {proximity_percent}% resistance proximity criteria.")
-        elif uploaded_file:
-            st.info("Click 'Scan Trades' to analyze the uploaded CSV.")
+                st.info(f"No smart trade suggestions found based on the {proximity_percent}% resistance proximity criteria using stored tickers.")
         else:
-            st.info("Please upload a CSV file with ticker symbols and click 'Scan Trades' to scan for smart trades.")
-    if auto_refresh:
-        time.sleep(30)
+            st.info(f"Click 'Scan Trades' or enable auto-scan to analyze tickers from {STORED_TICKERS_PATH}.")
+
+    with tabs[9]:
+        st.subheader("Lost Momentum Scanner")
+        momentum_scan_button = st.button("Scan Lost Momentum")
+        
+        # Auto-scan if enabled, using configurable interval
+        if (st.session_state['telegram_config']['auto_scan_enabled'] and 
+            current_time - st.session_state['last_scan_time'] >= auto_scan_interval_seconds):
+            momentum_scan_button = True
+        
+        if momentum_scan_button:
+            momentum_tickers = load_tickers()
+            if momentum_tickers:
+                with st.spinner("Scanning for lost momentum..."):
+                    suggestions = generate_lost_momentum_suggestions(
+                        momentum_tickers, expiry, 
+                        telegram_bot_token if enable_telegram_alerts else "", 
+                        telegram_chat_id if enable_telegram_alerts else ""
+                    )
+                    st.session_state['momentum_suggestions'] = suggestions
+                    
+                    # Send Telegram message with results
+                    if suggestions and st.session_state['telegram_config']['enable_telegram_alerts'] and telegram_bot_token and telegram_chat_id:
+                        message = f"*Lost Momentum Suggestions (Auto-Scan every {st.session_state['telegram_config']['auto_scan_interval']} min)*\n"
+                        for suggestion in suggestions:
+                            message += (
+                                f"Stock: *{suggestion['Ticker']}*\n"
+                                f"Yesterday Open: *₹{suggestion['Yesterday_Open']:.2f}*\n"
+                                f"Current: *₹{suggestion['Underlying']:.2f}*\n"
+                                f"Strike: *{suggestion['Strike']:.2f}*\n"
+                                f"Premium: *₹{suggestion['Premium']:.2f}*\n"
+                                f"Reason: *{suggestion['Reason']}*\n\n"
+                            )
+                        asyncio.run(send_telegram_message(telegram_bot_token, telegram_chat_id, message))
+            else:
+                st.warning(f"No tickers found in {STORED_TICKERS_PATH}. Please upload a CSV with 'SYMBOL' column.")
+        
+        if st.session_state['momentum_suggestions'] is not None:
+            if st.session_state['momentum_suggestions']:
+                suggestions_df = pd.DataFrame(st.session_state['momentum_suggestions'])
+                st.write("### Lost Momentum Trade Suggestions")
+                styled_df = suggestions_df.style.format({
+                    'Yesterday_Open': '{:.2f}',
+                    'Underlying': '{:.2f}',
+                    'Strike': '{:.2f}',
+                    'Premium': '{:.2f}'
+                })
+                st.table(styled_df)
+            else:
+                st.info(f"No tickers found with lost momentum using stored tickers from {STORED_TICKERS_PATH}.")
+        else:
+            st.info(f"Click 'Scan Lost Momentum' or enable auto-scan to analyze tickers from {STORED_TICKERS_PATH}.")
+    # if auto_refresh:
+    #     time.sleep(30)
+    #     st.session_state['refresh_key'] = time.time()
+    #     st.rerun()
+
+    # Combined auto-refresh and auto-scan logic
+    if auto_refresh or st.session_state['telegram_config']['auto_scan_enabled']:
+        check_interval = min(30, auto_scan_interval_seconds)  # Use the smaller of 30s or auto-scan interval
+        time.sleep(check_interval)
         st.session_state['refresh_key'] = time.time()
+        check_and_trigger_auto_scan()  # Check and run scan if due
         st.rerun()
 
 if __name__ == "__main__":
