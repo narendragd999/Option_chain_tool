@@ -617,8 +617,6 @@ def main():
         st.session_state['scan_trades_trigger'] = False
     if 'scan_momentum_trigger' not in st.session_state:
         st.session_state['scan_momentum_trigger'] = False
-    if 'refresh_clicked' not in st.session_state:
-            st.session_state['refresh_clicked'] = False
 
     # Check and trigger auto-scan
     check_and_trigger_auto_scan()
@@ -630,7 +628,6 @@ def main():
                              index=tickers.index("HDFCBANK") if "HDFCBANK" in tickers else 0)
         st.session_state['ticker'] = ticker
         auto_refresh = st.checkbox("Auto-Refresh (30s)", key="auto_refresh_checkbox")
-
         if st.button("Refresh Now"):
             st.session_state['refresh_key'] = time.time()  # Corrected
             st.session_state['last_refresh_time_display'] = datetime.now().strftime("%H:%M:%S")
@@ -661,25 +658,14 @@ def main():
         resistance_color = st.color_picker("Resistance Line Color:", value="#800080")
 
         st.subheader("Telegram Integration")
-        # telegram_bot_token = st.text_input("Telegram Bot Token:", 
-        #                              value=st.session_state['telegram_config']['telegram_bot_token'], 
-        #                              type="password")
-        # telegram_chat_id = st.text_input("Telegram Chat ID:", 
-        #                            value=st.session_state['telegram_config']['telegram_chat_id'])
-        # enable_telegram_alerts = st.checkbox("Enable Telegram Alerts", 
-        #                                value=st.session_state['telegram_config']['enable_telegram_alerts'],
-        #                                key="telegram_alerts_checkbox")
-
-        # Update session state directly with input values and detect changes
         telegram_bot_token = st.text_input("Telegram Bot Token:", 
-                                          value=st.session_state['telegram_config']['telegram_bot_token'], 
-                                          type="password", key="telegram_bot_token")
+                                     value=st.session_state['telegram_config']['telegram_bot_token'], 
+                                     type="password")
         telegram_chat_id = st.text_input("Telegram Chat ID:", 
-                                        value=st.session_state['telegram_config']['telegram_chat_id'], 
-                                        key="telegram_chat_id")
+                                   value=st.session_state['telegram_config']['telegram_chat_id'])
         enable_telegram_alerts = st.checkbox("Enable Telegram Alerts", 
-                                            value=st.session_state['telegram_config']['enable_telegram_alerts'], 
-                                        key="enable_telegram_alerts")
+                                       value=st.session_state['telegram_config']['enable_telegram_alerts'],
+                                       key="telegram_alerts_checkbox")
         
         st.subheader("Automation Settings")
         auto_scan_enabled = st.checkbox("Enable Auto-Scan", 
@@ -687,7 +673,7 @@ def main():
                                       key="auto_scan_checkbox")
         auto_scan_interval = st.number_input("Auto-Scan Interval (minutes):", 
                                            value=st.session_state['telegram_config']['auto_scan_interval'], 
-                                           min_value=1, step=1, key="auto_scan_interval")
+                                           min_value=1, step=1, key="auto_scan_interval_input")
 
         # Add Proximity to Resistance input in the sidebar
         proximity_to_resistance = st.number_input(
@@ -716,31 +702,29 @@ def main():
             st.session_state['telegram_config']['auto_scan_interval'] != auto_scan_interval):
             st.session_state['telegram_config']['auto_scan_enabled'] = auto_scan_enabled
             st.session_state['telegram_config']['auto_scan_interval'] = auto_scan_interval
-            st.session_state['telegram_config']['enable_telegram_alerts'] = enable_telegram_alerts
             st.session_state['telegram_config']['proximity_to_resistance'] = proximity_to_resistance
             save_config(st.session_state['telegram_config'])
 
         # Update config if any settings changed
-        config_changed = False
-        if st.session_state['telegram_config']['auto_scan_enabled'] != auto_scan_enabled:
-            st.session_state['telegram_config']['auto_scan_enabled'] = auto_scan_enabled
-            config_changed = True
-        if st.session_state['telegram_config']['auto_scan_interval'] != auto_scan_interval:
-            st.session_state['telegram_config']['auto_scan_interval'] = auto_scan_interval
-            config_changed = True
-        if st.session_state['telegram_config']['telegram_bot_token'] != telegram_bot_token:
-            st.session_state['telegram_config']['telegram_bot_token'] = telegram_bot_token
-            config_changed = True
-        if st.session_state['telegram_config']['telegram_chat_id'] != telegram_chat_id:
-            st.session_state['telegram_config']['telegram_chat_id'] = telegram_chat_id
-            config_changed = True
-        if st.session_state['telegram_config']['enable_telegram_alerts'] != enable_telegram_alerts:
-            st.session_state['telegram_config']['enable_telegram_alerts'] = enable_telegram_alerts
-            config_changed = True
-        if st.session_state['telegram_config']['proximity_to_resistance'] != proximity_to_resistance:
-            st.session_state['telegram_config']['proximity_to_resistance'] = proximity_to_resistance
-            config_changed = True
-        save_config(st.session_state['telegram_config'])
+        # config_changed = False
+        # if st.session_state['telegram_config']['auto_scan_enabled'] != auto_scan_enabled:
+        #     st.session_state['telegram_config']['auto_scan_enabled'] = auto_scan_enabled
+        #     config_changed = True
+        # if st.session_state['telegram_config']['auto_scan_interval'] != auto_scan_interval:
+        #     st.session_state['telegram_config']['auto_scan_interval'] = auto_scan_interval
+        #     config_changed = True
+        # if st.session_state['telegram_config']['telegram_bot_token'] != telegram_bot_token:
+        #     st.session_state['telegram_config']['telegram_bot_token'] = telegram_bot_token
+        #     config_changed = True
+        # if st.session_state['telegram_config']['telegram_chat_id'] != telegram_chat_id:
+        #     st.session_state['telegram_config']['telegram_chat_id'] = telegram_chat_id
+        #     config_changed = True
+        # if st.session_state['telegram_config']['enable_telegram_alerts'] != enable_telegram_alerts:
+        #     st.session_state['telegram_config']['enable_telegram_alerts'] = enable_telegram_alerts
+        #     config_changed = True
+        # if st.session_state['telegram_config']['proximity_to_resistance'] != proximity_to_resistance:
+        #     st.session_state['telegram_config']['proximity_to_resistance'] = proximity_to_resistance
+        #     config_changed = True
 
         if enable_telegram_alerts and (not telegram_bot_token or not telegram_chat_id):
             st.warning("Telegram alerts are enabled but Bot Token or Chat ID is missing. Please configure them.")
