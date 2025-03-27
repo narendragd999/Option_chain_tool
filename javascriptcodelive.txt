@@ -1,7 +1,7 @@
 // Function to find the "Auto-Refresh (30s)" checkbox
 function isAutoRefreshChecked() {
     const labels = Array.from(document.querySelectorAll('label'));
-    const autoRefreshLabel = labels.find(label => label.textContent.trim() === "Auto-Refresh (30s)");
+    const autoRefreshLabel = labels.find(label => label.textContent.trim() === "Auto-Refresh");
     if (autoRefreshLabel) {
         const checkbox = autoRefreshLabel.parentElement.querySelector('input[type="checkbox"]');
         if (checkbox) {
@@ -49,7 +49,7 @@ manageAutoRefresh();
 
 // Monitor the checkbox for changes
 const labels = Array.from(document.querySelectorAll('label'));
-const autoRefreshLabel = labels.find(label => label.textContent.trim() === "Auto-Refresh (30s)");
+const autoRefreshLabel = labels.find(label => label.textContent.trim() === "Auto-Refresh");
 if (autoRefreshLabel) {
     const checkbox = autoRefreshLabel.parentElement.querySelector('input[type="checkbox"]');
     if (checkbox) {
