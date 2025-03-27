@@ -1,0 +1,62 @@
+// Function to find the "Auto-Refresh (30s)" checkbox
+function isAutoRefreshChecked() {
+    const labels = Array.from(document.querySelectorAll('label'));
+    const autoRefreshLabel = labels.find(label => label.textContent.trim() === "Auto-Refresh (30s)");
+    if (autoRefreshLabel) {
+        const checkbox = autoRefreshLabel.parentElement.querySelector('input[type="checkbox"]');
+        if (checkbox) {
+            return checkbox.checked;
+        }
+    }
+    console.error("Auto-Refresh checkbox not found!");
+    return false;
+}
+
+// Function to click the "Refresh Now" button
+function clickRefreshButton() {
+    const refreshButton = Array.from(document.querySelectorAll('button'))
+        .find(button => button.textContent.trim() === "Refresh Now");
+    if (refreshButton) {
+        console.log("Found the Refresh Now button, clicking it at " + new Date().toLocaleTimeString());
+        refreshButton.click();
+    } else {
+        console.error("Refresh Now button not found at " + new Date().toLocaleTimeString());
+    }
+}
+
+// Function to manage the interval based on checkbox state
+function manageAutoRefresh() {
+    if (isAutoRefreshChecked()) {
+        console.log("Auto-Refresh is checked, starting interval...");
+        // Run immediately
+        clickRefreshButton();
+        // Set interval to run every 5 minute
+        const intervalId = setInterval(clickRefreshButton, 300000);
+        // Store the interval ID in a global variable so we can clear it later
+        window.autoRefreshIntervalId = intervalId;
+    } else {
+        console.log("Auto-Refresh is not checked, clearing interval if it exists...");
+        // Clear the interval if it exists
+        if (window.autoRefreshIntervalId) {
+            clearInterval(window.autoRefreshIntervalId);
+            window.autoRefreshIntervalId = null;
+        }
+    }
+}
+
+// Run initially
+manageAutoRefresh();
+
+// Monitor the checkbox for changes
+const labels = Array.from(document.querySelectorAll('label'));
+const autoRefreshLabel = labels.find(label => label.textContent.trim() === "Auto-Refresh (30s)");
+if (autoRefreshLabel) {
+    const checkbox = autoRefreshLabel.parentElement.querySelector('input[type="checkbox"]');
+    if (checkbox) {
+        checkbox.addEventListener('change', manageAutoRefresh);
+    } else {
+        console.error("Auto-Refresh checkbox input not found!");
+    }
+} else {
+    console.error("Auto-Refresh label not found!");
+}

@@ -629,7 +629,7 @@ def main():
         ticker = st.selectbox("Select NSE Ticker:", tickers, 
                              index=tickers.index("HDFCBANK") if "HDFCBANK" in tickers else 0)
         st.session_state['ticker'] = ticker
-        auto_refresh = st.checkbox("Auto-Refresh (30s)", key="auto_refresh_checkbox")
+        auto_refresh = st.checkbox("Auto-Refresh", key="auto_refresh_checkbox")
 
         if st.button("Refresh Now"):
             st.session_state['refresh_key'] = time.time()  # Corrected
