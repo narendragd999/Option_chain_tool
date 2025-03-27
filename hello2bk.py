@@ -521,7 +521,7 @@ def generate_lost_momentum_suggestions(tickers: List[str], expiry: str, bot_toke
                     "Underlying": underlying,
                     "Strike": nearest_strike,
                     "Premium": premium,
-                    #"Reason": f"Lost momentum: Yesterday Open ({yesterday_open:.2f}) > Current ({underlying:.2f})",
+                    "Reason": f"Lost momentum: Yesterday Open ({yesterday_open:.2f}) > Current ({underlying:.2f})",
                     "Suggestion": "Sell Call"
                 }
                 suggestions.append(suggestion)
