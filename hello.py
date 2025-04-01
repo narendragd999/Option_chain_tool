@@ -109,15 +109,44 @@ def get_alert_template(recommendation: Dict, ticker: str, expiry: str, underlyin
     return template
 
 # Existing Functions (unchanged unless specified)
+# def fetch_options_data(symbol: str, _refresh_key: float) -> Optional[Dict]:
+#     url = f"{BASE_URL}/api/option-chain-equities?symbol={symbol}"
+#     print(f"Fetching data from: {url}")
+#     response = scraper.get(url, headers=headers)
+#     if response.status_code == 200:
+#         return response.json()
+#     else:
+#         print(f"Failed with status code: {response.status_code}")
+#         return None
+
 def fetch_options_data(symbol: str, _refresh_key: float) -> Optional[Dict]:
     url = f"{BASE_URL}/api/option-chain-equities?symbol={symbol}"
-    print(f"Fetching data from: {url}")
+    quote_url = f"https://www.nseindia.com/api/quote-equity?symbol={symbol}"  # New API URL for last price
+    print(f"Fetching data from: {url} and {quote_url}")
+    
+    # Fetch options chain data
     response = scraper.get(url, headers=headers)
-    if response.status_code == 200:
-        return response.json()
-    else:
-        print(f"Failed with status code: {response.status_code}")
+    if response.status_code != 200:
+        print(f"Failed to load options chain for {symbol}: {response.status_code}")
         return None
+    
+    data = response.json()
+    
+    # Fetch quote data for last price
+    quote_response = scraper.get(quote_url, headers=headers)
+    if quote_response.status_code == 200:
+        quote_data = quote_response.json()
+        last_price = quote_data.get('priceInfo', {}).get('lastPrice', 0)  # Extract lastPrice
+        if last_price > 0:  # Ensure we have a valid last price
+            # Update the underlyingValue in the options data with lastPrice
+            if 'records' in data:
+                data['records']['underlyingValue'] = last_price
+        else:
+            print(f"No valid last price found for {symbol}, using default underlying.")
+    else:
+        print(f"Failed to load quote data for {symbol}: {quote_response.status_code}")
+    
+    return data
 
 def process_option_data(data: Dict, expiry: str) -> Tuple[pd.DataFrame, pd.DataFrame]:
     if not data or 'records' not in data or 'data' not in data['records']:
