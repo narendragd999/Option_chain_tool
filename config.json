@@ -4,5 +4,5 @@
     "enable_telegram_alerts": true,
     "auto_scan_enabled": true,
     "auto_scan_interval": 1,
-    "proximity_to_resistance": 1.0
+    "proximity_to_resistance": 0.4000000000000001
 }
